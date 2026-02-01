@@ -3,6 +3,7 @@
 
 int main() {
     printf("%d\n", 10);
+    fprintf(stderr, "%d\n\n\n", 10);
 
     double wait_time = 10.0;
     clock_t start = clock();

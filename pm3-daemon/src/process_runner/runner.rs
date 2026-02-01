@@ -1,54 +1,32 @@
-use std::{
-    fs::File,
-    process::{Command, Stdio},
-    thread,
-    time::Duration,
-};
-use sysinfo::{Pid, System};
+use crate::process_runner::pm3_process::PmProcess;
 
-pub struct ProcessRunner {}
+pub struct ProcessRunner {
+    pub processes: Vec<crate::process_runner::pm3_process::PmProcess>,
+}
 
 impl ProcessRunner {
-    pub async fn run() {
-        let filename = "../test_main";
-        let stdout_file = format!("../{filename}-1.log");
-        let stderr_file = format!("../{filename}-1.err.log");
+    pub fn init() -> Self {
+        let mut slf = ProcessRunner {
+            processes: Vec::new(),
+        };
+        use crate::utils::pm3_safe_cfg_handler;
 
-        let stdout = File::create(&stdout_file).expect("stdout file");
-        let stderr = File::create(&stderr_file).expect("stderr file");
+        let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
-        let mut child = Command::new(format!("./{filename}"))
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .expect("failed to start test_main");
+        // println!("{configs_dir:?}");
+        for cfg in configs_dir {
+            let process = PmProcess::new(cfg);
+            slf.processes.push(process);
+        }
 
-        let pid = Pid::from_u32(child.id());
+        return slf;
+    }
 
-        let mut sys = System::new();
-
-        println!("Started {filename} with PID={}", child.id());
-
-        loop {
-            // если процесс завершился — выходим
-            if let Ok(Some(status)) = child.try_wait() {
-                println!("Process exited: {status}");
-                break;
+    pub async fn run(self: &Self) {
+        for process in &self.processes {
+            if process.config.active {
+                process.awake();
             }
-
-            sys.refresh_process(pid);
-
-            if let Some(proc) = sys.process(pid) {
-                let mem_mb = proc.memory() as f64 / 1024.0;
-                let cpu = proc.cpu_usage();
-
-                println!("[monitor] CPU: {:.2}% | RAM: {:.2} MB", cpu, mem_mb);
-            } else {
-                println!("Process not found");
-                break;
-            }
-
-            thread::sleep(Duration::from_secs(1));
         }
     }
 }
