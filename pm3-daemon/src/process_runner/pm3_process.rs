@@ -1,12 +1,12 @@
 use crate::models::pm3_config::PmProcessConfig;
 use crate::utils::pm3_safe_dir;
-use std::{
-    fs::{self, File},
-    process::{Command, Stdio},
-    thread,
-    time::Duration,
-};
+
+use std::{fs::File, process::Stdio};
 use sysinfo::{Pid, System};
+use tokio::{
+    process::Command,
+    time::{Duration, sleep},
+};
 
 pub struct PmProcess {
     pub config: PmProcessConfig,
@@ -17,57 +17,70 @@ impl PmProcess {
         PmProcess { config: cfg }
     }
 
-    pub fn awake(self: &Self) {
+    pub async fn awake(&self) -> std::io::Result<()> {
+        let proc_name = self.config.exec_name.as_str();
+        let prefix = format!("[pm3:{proc_name}]");
+
         let filename_abs = self
             .config
             .exec_dir_absolute_path
-            .clone()
             .join(&self.config.exec_name);
-        let filename = filename_abs.as_path();
 
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
 
-        let logs_dir = pm3_home_dir.join("processes").join(&self.config.exec_name);
-        fs::create_dir_all(&logs_dir)
-            .expect("Pm3 couldn't create folder for {self.config.exec_name}");
+        let logs_dir = pm3_home_dir.join("processes").join(proc_name);
+        tokio::fs::create_dir_all(&logs_dir).await?;
 
-        let stdout_file = logs_dir.clone().join("cfg1.log");
-        let stderr_file = logs_dir.clone().join("cfg1.err.log");
+        let stdout_path = logs_dir.join("stdout.log");
+        let stderr_path = logs_dir.join("stderr.log");
 
-        let stdout = File::create(&stdout_file).expect("stdout file");
-        let stderr = File::create(&stderr_file).expect("stderr file");
+        // Можно оставить std::fs::File: создаётся один раз, не критично.
+        let stdout = File::create(&stdout_path)?;
+        let stderr = File::create(&stderr_path)?;
 
-        let mut child = Command::new(filename)
+        let mut child = Command::new(&filename_abs)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
-            .spawn()
-            .expect("failed to start test_main");
+            .spawn()?;
 
-        let pid = Pid::from_u32(child.id());
-
+        let pid = Pid::from_u32(child.id().unwrap_or(0));
         let mut sys = System::new();
 
-        println!("Started {filename:?} with PID={}", child.id());
+        println!(
+            "{prefix} started {:?} pid={}",
+            filename_abs,
+            child.id().unwrap_or(0)
+        );
 
         loop {
-            if let Ok(Some(status)) = child.try_wait() {
-                println!("Process exited: {status}");
-                break;
+            // tokio-friendly ожидание
+            match child.try_wait()? {
+                Some(status) => {
+                    println!("{prefix} exited: {status}");
+                    break;
+                }
+                None => {}
             }
 
+            // sysinfo синхронный, но лёгкий; обычно ок в таком цикле
             sys.refresh_process(pid);
 
-            if let Some(proc) = sys.process(pid) {
-                let mem_mb = proc.memory() as f64 / 1024.0;
-                let cpu = proc.cpu_usage();
+            if let Some(proc_) = sys.process(pid) {
+                let mem_mb = proc_.memory() as f64 / 1024.0; // sysinfo memory обычно в KiB
+                let cpu = proc_.cpu_usage();
 
-                println!("[monitor] CPU: {:.2}% | RAM: {:.2} MB", cpu, mem_mb);
+                println!(
+                    "{prefix} [monitor] CPU: {:.2}% | RAM: {:.2} MB",
+                    cpu, mem_mb
+                );
             } else {
-                println!("Process not found");
+                println!("{prefix} process not found (pid={})", pid.as_u32());
                 break;
             }
 
-            thread::sleep(Duration::from_secs(1));
+            sleep(Duration::from_secs(1)).await;
         }
+
+        Ok(())
     }
 }

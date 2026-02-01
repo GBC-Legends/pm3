@@ -1,4 +1,5 @@
 use crate::process_runner::pm3_process::PmProcess;
+use tokio::task::JoinSet;
 
 pub struct ProcessRunner {
     pub processes: Vec<crate::process_runner::pm3_process::PmProcess>,
@@ -22,10 +23,25 @@ impl ProcessRunner {
         return slf;
     }
 
-    pub async fn run(self: &Self) {
+    pub async fn run(&self) {
+        let mut set = JoinSet::new();
+
         for process in &self.processes {
-            if process.config.active {
-                process.awake();
+            if !process.config.active {
+                continue;
+            }
+
+            let cfg = process.config.clone();
+
+            set.spawn(async move {
+                let p = PmProcess::new(cfg);
+                let _ = p.awake().await;
+            });
+        }
+
+        while let Some(res) = set.join_next().await {
+            if let Err(e) = res {
+                eprintln!("[pm3] task join error: {e}");
             }
         }
     }

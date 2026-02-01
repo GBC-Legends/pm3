@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::collections::HashMap;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PmProcessConfig {
     pub exec_dir_absolute_path: PathBuf,
     pub exec_name: String,
