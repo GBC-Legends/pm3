@@ -1,8 +1,13 @@
 use crate::process_runner::pm3_process::PmProcess;
+use anyhow::Result;
+use std::sync::Arc;
+use sysinfo::{Pid, System};
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
+use tokio::time::{Duration, sleep};
 
 pub struct ProcessRunner {
-    pub processes: Vec<crate::process_runner::pm3_process::PmProcess>,
+    pub processes: Vec<Arc<Mutex<PmProcess>>>,
 }
 
 impl ProcessRunner {
@@ -14,28 +19,34 @@ impl ProcessRunner {
 
         let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
-        // println!("{configs_dir:?}");
         for cfg in configs_dir {
             let process = PmProcess::new(cfg);
-            slf.processes.push(process);
+            slf.processes.push(Arc::new(Mutex::new(process)));
         }
 
         return slf;
     }
 
-    pub async fn run(&self) {
+    pub async fn run(&mut self) -> Result<()> {
         let mut set = JoinSet::new();
 
         for process in &self.processes {
-            if !process.config.active {
-                continue;
-            }
-
-            let cfg = process.config.clone();
+            let process = Arc::clone(process);
 
             set.spawn(async move {
-                let p = PmProcess::new(cfg);
-                let _ = p.awake().await;
+                let active = {
+                    let p = process.lock().await;
+                    p.config.active
+                };
+
+                if !active {
+                    return;
+                }
+
+                let mut p = process.lock().await;
+                if let Err(e) = p.awake().await {
+                    eprintln!("[pm3] awake failed: {e}");
+                }
             });
         }
 
@@ -43,6 +54,66 @@ impl ProcessRunner {
             if let Err(e) = res {
                 eprintln!("[pm3] task join error: {e}");
             }
+        }
+
+        Ok(())
+    }
+
+    pub async fn dispatch(&mut self) {
+        println!("Dispatching processes...");
+        loop {
+            for p in &self.processes {
+                let (name, handle) = {
+                    let proc = p.lock().await;
+                    (proc.config.exec_name.clone(), Arc::clone(&proc.handle))
+                };
+
+                let prefix = format!("{name} [process]");
+
+                let (pid_u32, exited) = {
+                    let mut h = handle.lock().await;
+
+                    let Some(child) = h.as_mut() else {
+                        eprintln!("[pm3] {prefix} no handle");
+                        continue;
+                    };
+
+                    let pid = child.id().unwrap_or(0);
+
+                    let exited = match child.try_wait() {
+                        Ok(Some(status)) => {
+                            println!("{prefix} exited: {status}");
+                            *h = None;
+                            true
+                        }
+                        Ok(None) => false,
+                        Err(e) => {
+                            eprintln!("[pm3] {prefix} try_wait error: {e}");
+                            false
+                        }
+                    };
+
+                    (pid, exited)
+                };
+
+                if exited {
+                    continue;
+                }
+
+                let pid = Pid::from_u32(pid_u32);
+                let mut sys = System::new();
+                sys.refresh_process(pid);
+
+                if let Some(proc_) = sys.process(pid) {
+                    let mem_mb = proc_.memory() as f64;
+                    let cpu = proc_.cpu_usage();
+                    println!("{prefix} [monitor] CPU: {:.2}% | RAM: {:.2}", cpu, mem_mb);
+                } else {
+                    println!("{prefix} process not found (pid={})", pid.as_u32());
+                }
+            }
+
+            sleep(Duration::from_secs(1)).await;
         }
     }
 }

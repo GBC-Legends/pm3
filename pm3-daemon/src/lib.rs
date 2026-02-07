@@ -5,7 +5,12 @@ mod utils;
 use process_runner::runner;
 
 pub async fn start_application() {
-    let pm3_runner = runner::ProcessRunner::init();
+    let mut pm3_runner = runner::ProcessRunner::init();
 
-    pm3_runner.run().await;
+    match pm3_runner.run().await {
+        Ok(()) => println!("PM3 daemon initialized successfully"),
+        Err(e) => eprintln!("PM3 daemon failed to initialize: {e}"),
+    }
+
+    pm3_runner.dispatch().await;
 }
