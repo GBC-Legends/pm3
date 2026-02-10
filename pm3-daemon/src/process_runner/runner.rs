@@ -1,4 +1,5 @@
 use crate::process_runner::pm3_process::PmProcess;
+use crate::utils::bytes_safe_formatting::format_bytes;
 use anyhow::Result;
 use std::sync::Arc;
 use sysinfo::{Pid, System};
@@ -108,7 +109,11 @@ impl ProcessRunner {
                 if let Some(proc_) = sys.process(pid) {
                     let mem_mb = proc_.memory() as f64;
                     let cpu = proc_.cpu_usage();
-                    println!("{prefix} [monitor] CPU: {:.2}% | RAM: {:.2}", cpu, mem_mb);
+                    println!(
+                        "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
+                        cpu,
+                        format_bytes(mem_mb)
+                    );
                 } else {
                     println!("{prefix} process not found (pid={})", pid.as_u32());
                 }
