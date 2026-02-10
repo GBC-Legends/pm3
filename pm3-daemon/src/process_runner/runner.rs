@@ -61,6 +61,8 @@ impl ProcessRunner {
 
     pub async fn dispatch(&mut self) {
         println!("Dispatching processes...");
+        let mut sys = System::new();
+
         loop {
             for p in &self.processes {
                 let (name, handle) = {
@@ -101,7 +103,6 @@ impl ProcessRunner {
                 }
 
                 let pid = Pid::from_u32(pid_u32);
-                let mut sys = System::new();
                 sys.refresh_process(pid);
 
                 if let Some(proc_) = sys.process(pid) {

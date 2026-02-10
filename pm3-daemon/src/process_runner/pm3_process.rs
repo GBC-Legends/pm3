@@ -47,6 +47,7 @@ impl PmProcess {
         let stderr = File::create(&stderr_path)?;
 
         let child = Command::new(&filename_abs)
+            .args(&self.config.exec_args)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;

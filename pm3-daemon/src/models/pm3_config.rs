@@ -6,7 +6,7 @@ use std::str::FromStr;
 pub(crate) struct PmProcessConfig {
     pub exec_dir_absolute_path: PathBuf,
     pub exec_name: String,
-    pub exec_args: String,
+    pub exec_args: Vec<String>,
     pub active: bool,
 
     pub extra: HashMap<String, String>,
@@ -38,7 +38,11 @@ impl FromStr for PmProcessConfig {
         let exec_name = map.remove("exec_name").ok_or("missing exec_name")?;
 
         // Необязательные
-        let exec_args = map.remove("exec_args").unwrap_or_default();
+        let exec_args_string = map.remove("exec_args").unwrap_or_default();
+        let exec_args: Vec<String> = exec_args_string
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
 
         let active = map
             .remove("active")
