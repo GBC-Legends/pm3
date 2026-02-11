@@ -1,11 +1,13 @@
+use crate::command_handler::commands::RunnerCommand;
 use crate::process_runner::pm3_process::PmProcess;
 use crate::utils::bytes_safe_formatting::format_bytes;
 use anyhow::Result;
 use std::sync::Arc;
 use sysinfo::{Pid, System};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, interval};
 
 pub struct ProcessRunner {
     pub processes: Vec<Arc<Mutex<PmProcess>>>,
@@ -60,66 +62,90 @@ impl ProcessRunner {
         Ok(())
     }
 
-    pub async fn dispatch(&mut self) {
+    pub async fn dispatch(&mut self, rx: &mut mpsc::Receiver<RunnerCommand>) {
         println!("Dispatching processes...");
         let mut sys = System::new();
+        let mut tick = interval(Duration::from_secs(1));
 
         loop {
-            for p in &self.processes {
-                let (name, handle) = {
-                    let proc = p.lock().await;
-                    (proc.config.exec_name.clone(), Arc::clone(&proc.handle))
-                };
+            tokio::select! {
+                biased;
+                _ = tick.tick() => {
+                    for p in &self.processes {
+                        let (name, handle) = {
+                            let proc = p.lock().await;
+                            (proc.config.exec_name.clone(), Arc::clone(&proc.handle))
+                        };
 
-                let prefix = format!("{name} [process]");
+                        let prefix = format!("{name} [process]");
 
-                let (pid_u32, exited) = {
-                    let mut h = handle.lock().await;
+                        let (pid_u32, exited) = {
+                            let mut h = handle.lock().await;
 
-                    let Some(child) = h.as_mut() else {
-                        eprintln!("[pm3] {prefix} no handle");
-                        continue;
-                    };
+                            let Some(child) = h.as_mut() else {
+                                eprintln!("[pm3] {prefix} no handle");
+                                continue;
+                            };
 
-                    let pid = child.id().unwrap_or(0);
+                            let pid = child.id().unwrap_or(0);
 
-                    let exited = match child.try_wait() {
-                        Ok(Some(status)) => {
-                            println!("{prefix} exited: {status}");
-                            *h = None;
-                            true
+                            let exited = match child.try_wait() {
+                                Ok(Some(status)) => {
+                                    println!("{prefix} exited: {status}");
+                                    *h = None;
+                                    true
+                                }
+                                Ok(None) => false,
+                                Err(e) => {
+                                    eprintln!("[pm3] {prefix} try_wait error: {e}");
+                                    false
+                                }
+                            };
+
+                            (pid, exited)
+                        };
+
+                        if exited {
+                            continue;
                         }
-                        Ok(None) => false,
-                        Err(e) => {
-                            eprintln!("[pm3] {prefix} try_wait error: {e}");
-                            false
+
+                        let pid = Pid::from_u32(pid_u32);
+                        sys.refresh_process(pid);
+
+                        if let Some(proc_) = sys.process(pid) {
+                            let mem_mb = proc_.memory() as f64;
+                            let cpu = proc_.cpu_usage();
+                            println!(
+                                "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
+                                cpu,
+                                format_bytes(mem_mb)
+                            );
+                        } else {
+                            println!("{prefix} process not found (pid={})", pid.as_u32());
                         }
-                    };
-
-                    (pid, exited)
-                };
-
-                if exited {
-                    continue;
+                    }
                 }
 
-                let pid = Pid::from_u32(pid_u32);
-                sys.refresh_process(pid);
+                cmd = rx.recv() => {
+                    let Some(cmd) = cmd else {
+                        eprintln!("[pm3] command channel closed");
+                        break;
+                    };
 
-                if let Some(proc_) = sys.process(pid) {
-                    let mem_mb = proc_.memory() as f64;
-                    let cpu = proc_.cpu_usage();
-                    println!(
-                        "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
-                        cpu,
-                        format_bytes(mem_mb)
-                    );
-                } else {
-                    println!("{prefix} process not found (pid={})", pid.as_u32());
+                    if let Err(e) = self.handle_command(cmd).await {
+                        eprintln!("[pm3] handle_command error: {e:?}");
+                    }
                 }
             }
+        }
+    }
 
-            sleep(Duration::from_secs(1)).await;
+    async fn handle_command(&mut self, cmd: RunnerCommand) -> anyhow::Result<()> {
+        match cmd {
+            RunnerCommand::Ping { reply } => {
+                let _ = reply.send(Ok("pong".to_string()));
+                Ok(())
+            }
         }
     }
 }
