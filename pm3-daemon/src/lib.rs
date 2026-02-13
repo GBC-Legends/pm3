@@ -22,7 +22,7 @@ pub async fn start_application() -> anyhow::Result<()> {
         pm3_runner.dispatch(&mut rx).await;
     });
 
-    let tcp = TcpCommandHandler::new("0.0.0.0:8080", tx).await?;
+    let tcp = TcpCommandHandler::new("127.0.0.1:8046", tx).await?;
     tcp.run().await?;
 
     Ok(())
