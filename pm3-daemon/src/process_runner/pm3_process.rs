@@ -1,5 +1,6 @@
 use crate::models::pm3_config::PmProcessConfig;
 use crate::utils::pm3_safe_dir;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -21,12 +22,7 @@ impl PmProcess {
     }
 
     pub async fn awake(&mut self) -> std::io::Result<()> {
-        let proc_name = self.config.exec_name.as_str();
-
-        let filename_abs = self
-            .config
-            .exec_dir_absolute_path
-            .join(&self.config.exec_name);
+        let filename_abs = PathBuf::from(&self.config.exec_name);
 
         if !filename_abs.exists() {
             return Err(std::io::Error::new(
@@ -37,8 +33,13 @@ impl PmProcess {
 
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
 
-        let logs_dir = pm3_home_dir.join("processes").join(proc_name);
-        tokio::fs::create_dir_all(&logs_dir).await?;
+        let logs_dir = pm3_home_dir.join("processes").join(&self.config.proc_name);
+        println!("Logs directory: {}", logs_dir.display());
+
+        match tokio::fs::create_dir_all(&logs_dir).await {
+            Ok(_) => println!("Directory created successfully"),
+            Err(_) => {}
+        }
 
         let stdout_path = logs_dir.join("stdout.log");
         let stderr_path = logs_dir.join("stderr.log");
@@ -47,6 +48,7 @@ impl PmProcess {
         let stderr = File::create(&stderr_path)?;
 
         let child = Command::new(&filename_abs)
+            .current_dir(&self.config.exec_dir_absolute_path)
             .args(&self.config.exec_args)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))

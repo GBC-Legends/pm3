@@ -74,7 +74,7 @@ impl ProcessRunner {
                     for p in &self.processes {
                         let (name, handle) = {
                             let proc = p.lock().await;
-                            (proc.config.exec_name.clone(), Arc::clone(&proc.handle))
+                            (proc.config.proc_name.clone(), Arc::clone(&proc.handle))
                         };
 
                         let prefix = format!("{name} [process]");
