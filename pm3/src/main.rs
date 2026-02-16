@@ -1,3 +1,8 @@
+use clap::Parser;
+use pm3::{process_commands, Cli};
+
 fn main() {
-    println!("Hello, world!");
+    let cli = Cli::parse();
+
+    process_commands(cli.command)
 }
