@@ -146,6 +146,33 @@ impl ProcessRunner {
                 let _ = reply.send(Ok("pong".to_string()));
                 Ok(())
             }
+            RunnerCommand::Start { config, reply } => {
+                let mut exists = false;
+                for p in &self.processes {
+                    if p.lock().await.config.proc_name == config.proc_name {
+                        exists = true;
+                        break;
+                    }
+                }
+                if exists {
+                    let _ = reply.send(Ok("Process already exists".to_string()));
+                    return Ok(());
+                }
+
+                let mut process = PmProcess::new(config.clone());
+
+                if let Err(e) = process.awake().await {
+                    let _ = reply.send(Err(e.into()));
+                    return Ok(());
+                }
+
+                let process_arc = Arc::new(Mutex::new(process));
+
+                self.processes.push(process_arc);
+
+                let _ = reply.send(Ok("Started successfully".to_string()));
+                Ok(())
+            }
         }
     }
 }

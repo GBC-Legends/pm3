@@ -5,8 +5,8 @@ use std::str::FromStr;
 #[derive(Debug, Clone)]
 pub(crate) struct PmProcessConfig {
     pub proc_name: String,
-    pub exec_dir_absolute_path: PathBuf,
-    pub exec_name: String,
+    pub exec_dir: PathBuf,
+    pub exec_name: PathBuf,
     pub exec_args: Vec<String>,
     pub active: bool,
 
@@ -52,8 +52,8 @@ impl FromStr for PmProcessConfig {
 
         Ok(PmProcessConfig {
             proc_name,
-            exec_dir_absolute_path: PathBuf::from(exec_dir),
-            exec_name,
+            exec_dir: PathBuf::from(exec_dir),
+            exec_name: PathBuf::from(exec_name),
             exec_args,
             active,
             extra: map,
