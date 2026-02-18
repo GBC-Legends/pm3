@@ -146,3 +146,43 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 
     out
 }
+
+pub fn process_inputs(
+    interpreter: &Option<String>,
+    path: &Path,
+    args: Vec<String>,
+    program: &str,
+) -> (String, Vec<String>) {
+    let is_script = interpreter.is_some() || is_script_ext(path);
+
+    if is_script {
+        let runner = interpreter
+            .as_deref()
+            .or_else(|| runner_for_ext(path))
+            .unwrap();
+
+        let runner_path = if has_path_separators(runner) {
+            to_abs_best_effort(runner)
+        } else {
+            search_in_path(runner)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| runner.to_string())
+        };
+
+        let mut exec_args = Vec::with_capacity(1 + args.len());
+        exec_args.push(program.to_string());
+        exec_args.extend(args);
+
+        (runner_path, exec_args)
+    } else {
+        let exec = if has_path_separators(&program) {
+            to_abs_best_effort(&program)
+        } else {
+            search_in_path(&program)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| program.to_string())
+        };
+
+        (exec, args)
+    }
+}
