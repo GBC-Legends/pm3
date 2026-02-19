@@ -179,6 +179,18 @@ impl ProcessRunner {
 
                 Ok(())
             }
+            RunnerCommand::Stop {
+                stop_programs,
+                reply,
+            } => {
+                for i in stop_programs {
+                    println!("stopping {i}");
+                }
+
+                let _ = reply.send(Ok("Stopped successfully".to_string()));
+
+                Ok(())
+            }
         }
     }
 }

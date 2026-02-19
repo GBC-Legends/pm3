@@ -95,6 +95,19 @@ impl TcpCommandHandler {
                 .await?;
                 Ok(reply_rx.await??)
             }
+            "stop" => {
+                println!("{args:?}");
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Stop {
+                    stop_programs: args
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                    reply: reply_tx,
+                })
+                .await?;
+                Ok(reply_rx.await??)
+            }
 
             _ => anyhow::bail!("unknown command"),
         }
