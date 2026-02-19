@@ -60,3 +60,33 @@ impl FromStr for PmProcessConfig {
         })
     }
 }
+
+impl PmProcessConfig {
+    pub fn dump(&self) -> String {
+        let mut out = String::with_capacity(256);
+
+        out.push_str("proc_name=");
+        out.push_str(&self.proc_name);
+        out.push('\n');
+
+        out.push_str("exec_dir=");
+        out.push_str(&self.exec_dir.to_string_lossy());
+        out.push('\n');
+
+        out.push_str("exec_name=");
+        out.push_str(&self.exec_name.to_string_lossy());
+        out.push('\n');
+
+        out.push_str("exec_args=");
+        if !self.exec_args.is_empty() {
+            out.push_str(&self.exec_args.join(" "));
+        }
+        out.push('\n');
+
+        out.push_str("active=");
+        out.push_str(if self.active { "1" } else { "0" });
+        out.push('\n');
+
+        out
+    }
+}

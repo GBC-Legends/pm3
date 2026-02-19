@@ -1,5 +1,5 @@
-use crate::models::pm3_config::PmProcessConfig;
 use crate::utils::pm3_safe_dir;
+use crate::{models::pm3_config::PmProcessConfig, utils::pm3_safe_cfg_handler};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -62,5 +62,17 @@ impl PmProcess {
         println!("Process: {:?}", self);
 
         Ok(())
+    }
+
+    pub fn dump_config(&self) -> anyhow::Result<PathBuf> {
+        let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
+
+        let config_file_path = pm3_home_dir
+            .join("configs")
+            .join(format!("{}.proc", self.config.proc_name));
+
+        pm3_safe_cfg_handler::save_config(&self.config, &config_file_path)?;
+
+        Ok(config_file_path)
     }
 }

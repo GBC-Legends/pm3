@@ -161,6 +161,11 @@ impl ProcessRunner {
 
                 let mut process = PmProcess::new(config.clone());
 
+                if let Err(e) = process.dump_config() {
+                    let _ = reply.send(Err(e.into()));
+                    return Ok(());
+                }
+
                 if let Err(e) = process.awake().await {
                     let _ = reply.send(Err(e.into()));
                     return Ok(());
@@ -171,6 +176,19 @@ impl ProcessRunner {
                 self.processes.push(process_arc);
 
                 let _ = reply.send(Ok("Started successfully".to_string()));
+
+                Ok(())
+            }
+            RunnerCommand::Stop {
+                stop_programs,
+                reply,
+            } => {
+                for i in stop_programs {
+                    println!("stopping {i}");
+                }
+
+                let _ = reply.send(Ok("Stopped successfully".to_string()));
+
                 Ok(())
             }
         }

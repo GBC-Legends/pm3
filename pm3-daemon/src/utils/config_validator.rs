@@ -18,17 +18,17 @@ pub fn verify_start_config(raw: &str) -> anyhow::Result<PmProcessConfig> {
     let active = parse_bool01(get_required(&params, "active")?)?;
 
     let exec_args = params
-        .get("exec_args")
+        .get("args")
         .map(|s| split_args_simple(s))
         .unwrap_or_default();
 
-    if !path_is_within(&exec_name, &exec_dir) {
-        anyhow::bail!(
-            "exec_name must be within exec_dir: exec_name='{}' exec_dir='{}'",
-            exec_name.display(),
-            exec_dir.display()
-        );
-    }
+    // if !path_is_within(&exec_name, &exec_dir) {
+    //     anyhow::bail!(
+    //         "exec_name must be within exec_dir: exec_name='{}' exec_dir='{}'",
+    //         exec_name.display(),
+    //         exec_dir.display()
+    //     );
+    // }
 
     Ok(PmProcessConfig {
         proc_name: proc_name.to_string(),
@@ -62,7 +62,6 @@ fn get_required<'a>(m: &'a HashMap<String, String>, k: &str) -> anyhow::Result<&
         .ok_or_else(|| anyhow::anyhow!("missing required param: {k}"))
 }
 
-/// Простая валидация имени процесса
 fn validate_proc_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() {
         anyhow::bail!("proc_name is empty");
@@ -70,7 +69,6 @@ fn validate_proc_name(name: &str) -> anyhow::Result<()> {
     if name.len() > 128 {
         anyhow::bail!("proc_name too long");
     }
-    // запретим пробелы и слеши, чтобы не было path/format injection
     if name
         .chars()
         .any(|c| c.is_whitespace() || c == '/' || c == '\\')
@@ -95,13 +93,10 @@ fn parse_bool01(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-/// Проверка "exec_name внутри exec_dir" без обращения к FS.
-/// Нормализуем '.', '..' лексически.
 fn path_is_within(child: &Path, parent: &Path) -> bool {
     let c = lexical_normalize(child);
     let p = lexical_normalize(parent);
 
-    // parent должен быть префиксом child
     let mut c_it = c.components();
     for pc in p.components() {
         match c_it.next() {
@@ -128,14 +123,10 @@ fn lexical_normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Очень простой split для exec_args: по пробелам.
-/// Если хочешь поддержать кавычки/эскейпы — скажи, сделаем shell-like parser.
 fn split_args_simple(s: &str) -> Vec<String> {
     s.split_whitespace().map(|x| x.to_string()).collect()
 }
 
-/// Парсим query-string a=b&c=d, делаем percent-decode, '+' => ' '
-/// Без повторяющихся ключей: если ключ повторился — ошибка.
 fn parse_query(q: &str) -> anyhow::Result<HashMap<String, String>> {
     let mut map = HashMap::new();
 
@@ -149,7 +140,7 @@ fn parse_query(q: &str) -> anyhow::Result<HashMap<String, String>> {
         }
         let (k_raw, v_raw) = match pair.split_once('=') {
             Some(x) => x,
-            None => (pair, ""), // allow "k" without '=' => value=""
+            None => (pair, ""),
         };
 
         let k = url_decode(k_raw)?;
@@ -167,8 +158,6 @@ fn parse_query(q: &str) -> anyhow::Result<HashMap<String, String>> {
     Ok(map)
 }
 
-/// Percent-decode: %XX, плюс '+' -> ' '
-/// Ошибка, если % некорректный.
 fn url_decode(s: &str) -> anyhow::Result<String> {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());

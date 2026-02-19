@@ -11,4 +11,8 @@ pub enum RunnerCommand {
         config: PmProcessConfig,
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
+    Stop {
+        stop_programs: Vec<String>,
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }
