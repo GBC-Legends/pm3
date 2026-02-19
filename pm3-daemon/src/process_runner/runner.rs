@@ -161,6 +161,11 @@ impl ProcessRunner {
 
                 let mut process = PmProcess::new(config.clone());
 
+                if let Err(e) = process.dump_config() {
+                    let _ = reply.send(Err(e.into()));
+                    return Ok(());
+                }
+
                 if let Err(e) = process.awake().await {
                     let _ = reply.send(Err(e.into()));
                     return Ok(());

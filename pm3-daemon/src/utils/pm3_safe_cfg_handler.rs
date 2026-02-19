@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::fs::create_dir_all;
 use std::io;
+use std::io::Write;
 use std::path::PathBuf;
 
 pub(crate) fn safely_retreive_configs() -> PathBuf {
@@ -43,4 +44,14 @@ pub(crate) fn parse_configs() -> io::Result<Vec<PmProcessConfig>> {
     }
 
     Ok(res)
+}
+
+pub(crate) fn save_config(config: &PmProcessConfig, cfg_path: &PathBuf) -> anyhow::Result<()> {
+    let mut file = fs::File::create(cfg_path)?;
+
+    let dump = config.dump();
+
+    file.write_all(dump.as_bytes())?;
+
+    Ok(())
 }
