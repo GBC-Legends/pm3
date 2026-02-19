@@ -171,6 +171,7 @@ impl ProcessRunner {
                 self.processes.push(process_arc);
 
                 let _ = reply.send(Ok("Started successfully".to_string()));
+
                 Ok(())
             }
         }
