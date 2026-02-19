@@ -30,9 +30,15 @@ pub struct StartArgs {
 
 pub fn process_commands(cmd: Commands) {
     match cmd {
-        Commands::Ping => ping_server(),
+        Commands::Ping => match ping_server() {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("Error: {}", err),
+        },
         Commands::Start(args) => {
-            start_program(args.program, args.args, args.interpreter, args.name)
+            match start_program(args.program, args.args, args.interpreter, args.name) {
+                Ok(response) => println!("{}", response),
+                Err(err) => println!("Error: {}", err),
+            }
         }
-    }
+    };
 }

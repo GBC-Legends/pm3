@@ -1,4 +1,5 @@
 use crate::utils::start_helpers;
+use std::io::{Read, Result, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -76,7 +77,7 @@ pub fn start_program(
     args: Vec<String>,
     interpreter: Option<String>,
     name: Option<String>,
-) {
+) -> Result<String> {
     let path = Path::new(&program);
 
     let (exec_name, exec_args) = start_helpers::process_inputs(&interpreter, path, args, &program);
@@ -91,11 +92,27 @@ pub fn start_program(
 
     let exec_dir = match std::env::current_dir() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get current directory",
+            ));
+        }
     };
 
     let new_process = NewProcessConfig::new(proc_name, exec_dir, exec_name, exec_args);
 
-    println!("{:?}", new_process.to_url_encoded());
-    // 6 - вынести стрим в функцию и передать ему `format!("START {}", new_process.to_url_encoded())`
+    let msg = format!("start {:?}\n", new_process.to_url_encoded());
+    println!("{msg}");
+
+    let mut stream = crate::tcp_connector::init_stream()?;
+
+    if stream.write_all(msg.as_bytes()).is_err() {
+        println!("Error: Failed to send start command");
+    }
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+
+    Ok(response)
 }
