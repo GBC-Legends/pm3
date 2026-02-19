@@ -1,5 +1,5 @@
 use crate::utils::start_helpers;
-use std::io::{Read, Result, Write};
+use std::io::{BufRead, BufReader, Result, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -102,17 +102,16 @@ pub fn start_program(
 
     let new_process = NewProcessConfig::new(proc_name, exec_dir, exec_name, exec_args);
 
-    let msg = format!("start {:?}\n", new_process.to_url_encoded());
-    println!("{msg}");
+    let msg = format!("start {}\n", new_process.to_url_encoded());
 
     let mut stream = crate::tcp_connector::init_stream()?;
+    stream.write_all(msg.as_bytes())?;
+    stream.flush()?;
 
-    if stream.write_all(msg.as_bytes()).is_err() {
-        println!("Error: Failed to send start command");
-    }
-
+    let mut reader = BufReader::new(stream);
     let mut response = String::new();
-    stream.read_to_string(&mut response)?;
+    reader.read_line(&mut response)?;
+    println!("resp={response}");
 
     Ok(response)
 }
