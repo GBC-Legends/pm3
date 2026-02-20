@@ -31,8 +31,8 @@ pub enum PmProcessStatus {
     InitializingFailed,
     Running,
     Stopped,
-    Exited(u32),
-    Finished,
+    Exited(i32),
+    Finished(i32),
 }
 
 impl PmProcessStatus {
@@ -138,37 +138,48 @@ impl PmProcess {
     }
 
     pub async fn monitor(&self, sys: &mut System) {
-        let (name, handle) = { (self.proc_name.clone(), &mut self.inner.lock().await.handle) };
-
+        let name = self.proc_name.clone();
         let prefix = format!("{name} [process]");
 
-        let (pid_u32, exited) = {
-            let Some(child) = handle.as_mut() else {
+        let mut guard = self.inner.lock().await;
+
+        let Some(child) = guard.handle.as_mut() else {
+            if guard.process_status.is_active() {
                 eprintln!("[pm3] {prefix} no handle");
-                return;
-            };
-
-            let pid = child.id().unwrap_or(0);
-
-            let exited = match child.try_wait() {
-                Ok(Some(status)) => {
-                    println!("{prefix} exited: {status}");
-                    *handle = None;
-                    true
-                }
-                Ok(None) => false,
-                Err(e) => {
-                    eprintln!("[pm3] {prefix} try_wait error: {e}");
-                    false
-                }
-            };
-
-            (pid, exited)
+            }
+            return;
         };
 
-        if exited {
-            return;
+        let pid_u32 = child.id().unwrap_or(0);
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code().unwrap_or(-1);
+
+                guard.handle = None;
+
+                if code == 0 {
+                    guard.process_status = PmProcessStatus::Finished(code);
+                } else {
+                    guard.process_status = PmProcessStatus::Exited(code);
+                }
+
+                let printed_code = match guard.process_status {
+                    PmProcessStatus::Finished(c) | PmProcessStatus::Exited(c) => c,
+                    _ => -1,
+                };
+
+                println!("Process {name} exited with code {printed_code}");
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("[pm3] {prefix} try_wait error: {e}");
+                return;
+            }
         }
+
+        drop(guard);
 
         let pid = Pid::from_u32(pid_u32);
         sys.refresh_process(pid);

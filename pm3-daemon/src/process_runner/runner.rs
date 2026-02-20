@@ -67,8 +67,9 @@ impl ProcessRunner {
                 biased;
                 _ = tick.tick() => {
                     for p in &self.processes {
-                        let process = Arc::clone(p);
-                        process.monitor(&mut sys).await;
+                        if p.is_active().await {
+                            p.monitor(&mut sys).await;
+                        }
                     }
                 }
 
