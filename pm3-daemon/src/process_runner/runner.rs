@@ -131,56 +131,39 @@ impl ProcessRunner {
                 stop_programs,
                 reply,
             } => {
-                let mut finished_processes = Vec::new();
+                let mut finished = Vec::<String>::new();
 
                 for program_id in stop_programs {
-                    match program_id.parse::<u64>() {
-                        Ok(id) => {
-                            let process = self.processes.iter().find(|p| p.idx == id);
-                            if let Some(process) = process {
-                                if !process.is_active().await {
-                                    println!("process {program_id} is already stopped");
-                                    continue;
-                                }
-
-                                match process.stop().await {
-                                    Ok(()) => {
-                                        finished_processes.push(process.idx.to_string());
-                                    }
-                                    Err(e) => {
-                                        println!("Error stopping process: {}", e);
-                                    }
-                                };
-                            }
-                        }
-                        Err(_) => {
-                            let process = self
-                                .processes
+                    let proc_opt = program_id
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|id| self.processes.iter().find(|p| p.idx == id))
+                        .or_else(|| {
+                            self.processes
                                 .iter()
-                                .find(|p| p.proc_name.as_ref() == program_id);
-                            if let Some(process) = process {
-                                if !process.is_active().await {
-                                    println!("process {program_id} is already stopped");
-                                }
+                                .find(|p| p.proc_name.as_ref() == program_id)
+                        });
 
-                                match process.stop().await {
-                                    Ok(()) => {
-                                        finished_processes.push(process.idx.to_string());
-                                    }
-                                    Err(e) => {
-                                        println!("Error stopping process: {}", e);
-                                    }
-                                };
-                            }
+                    if let Some(proc) = proc_opt {
+                        if !proc.is_active().await {
+                            println!("process {program_id} is already stopped");
+                            continue;
+                        }
+
+                        match proc.stop().await {
+                            Ok(()) => finished.push(proc.idx.to_string()),
+                            Err(e) => println!("Error stopping process: {e}"),
                         }
                     }
                 }
 
-                let _ = reply.send(Ok(format!(
-                    "Stopped {} successfully",
-                    finished_processes.join(", ")
-                )));
+                let msg = if finished.is_empty() {
+                    "No processes were stopped".to_string()
+                } else {
+                    format!("Stopped {} successfully", finished.join(", "))
+                };
 
+                let _ = reply.send(Ok(msg));
                 Ok(())
             }
         }
