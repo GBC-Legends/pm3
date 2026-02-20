@@ -1,7 +1,6 @@
 use crate::command_handler::commands::RunnerCommand;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
-use crate::utils::bytes_safe_formatting::format_bytes;
 use anyhow::Result;
 use std::sync::Arc;
 use sysinfo::System;
@@ -40,7 +39,7 @@ impl ProcessRunner {
             set.spawn(async move {
                 let active = {
                     let p = process.lock().await;
-                    p.config.active
+                    p.process_status.is_active()
                 };
 
                 if !active {
@@ -49,6 +48,7 @@ impl ProcessRunner {
 
                 let mut p = process.lock().await;
                 if let Err(e) = p.awake().await {
+                    p.not_initialized();
                     eprintln!("[pm3] awake failed: {e}");
                 }
             });

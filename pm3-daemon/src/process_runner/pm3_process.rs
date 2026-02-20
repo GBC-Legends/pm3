@@ -29,26 +29,51 @@ pub enum PmProcessStatus {
     Finished,
 }
 
+impl PmProcessStatus {
+    pub fn is_active(&self) -> bool {
+        match self {
+            PmProcessStatus::NotStarted => true,
+            PmProcessStatus::Initializing => true,
+            PmProcessStatus::Running => true,
+            _ => false,
+        }
+    }
+}
+
 impl PmProcess {
     pub fn new(cfg: PmProcessConfig, idx: u64) -> Self {
+        let starting_status = match cfg.active {
+            true => PmProcessStatus::NotStarted,
+            false => PmProcessStatus::Disabled,
+        };
+
         PmProcess {
             idx: idx,
             config: cfg,
             handle: Arc::new(Mutex::new(None)),
-            process_status: PmProcessStatus::NotStarted,
+            process_status: starting_status,
         }
     }
 
-    pub async fn awake(&mut self) -> std::io::Result<()> {
-        self.process_status = PmProcessStatus::Initializing;
+    pub fn set_status(&mut self, status: PmProcessStatus) {
+        self.process_status = status;
+    }
+
+    pub fn not_initialized(&mut self) {
+        self.set_status(PmProcessStatus::InitializingFailed);
+    }
+
+    pub async fn awake(&mut self) -> anyhow::Result<()> {
+        self.set_status(PmProcessStatus::Initializing);
 
         let filename_abs = PathBuf::from(&self.config.exec_name);
 
         if !filename_abs.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Executable not found",
-            ));
+            self.set_status(PmProcessStatus::InitializingFailed);
+            return Err(anyhow::Error::msg(format!(
+                "Executable not found: {}",
+                filename_abs.display()
+            )));
         }
 
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
@@ -79,9 +104,7 @@ impl PmProcess {
             *guard = Some(child);
         }
 
-        println!("Process: {:?}", self);
-
-        self.process_status = PmProcessStatus::Running;
+        self.set_status(PmProcessStatus::Running);
 
         Ok(())
     }

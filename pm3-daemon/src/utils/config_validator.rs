@@ -22,14 +22,6 @@ pub fn verify_start_config(raw: &str) -> anyhow::Result<PmProcessConfig> {
         .map(|s| split_args_simple(s))
         .unwrap_or_default();
 
-    // if !path_is_within(&exec_name, &exec_dir) {
-    //     anyhow::bail!(
-    //         "exec_name must be within exec_dir: exec_name='{}' exec_dir='{}'",
-    //         exec_name.display(),
-    //         exec_dir.display()
-    //     );
-    // }
-
     Ok(PmProcessConfig {
         proc_name: proc_name.to_string(),
         exec_dir,
@@ -91,36 +83,6 @@ fn parse_bool01(s: &str) -> anyhow::Result<bool> {
         "0" | "false" | "no" | "off" => Ok(false),
         _ => anyhow::bail!("active must be 0/1/true/false, got '{s}'"),
     }
-}
-
-fn path_is_within(child: &Path, parent: &Path) -> bool {
-    let c = lexical_normalize(child);
-    let p = lexical_normalize(parent);
-
-    let mut c_it = c.components();
-    for pc in p.components() {
-        match c_it.next() {
-            Some(cc) if cc == pc => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
-fn lexical_normalize(p: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            _ => out.push(c.as_os_str()),
-        }
-    }
-    out
 }
 
 fn split_args_simple(s: &str) -> Vec<String> {
