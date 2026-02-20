@@ -1,5 +1,6 @@
 pub mod ping;
 pub mod start;
+pub mod stop;
 
 use std::io::Result;
 use std::net::TcpStream;
@@ -20,8 +21,7 @@ pub fn init_stream() -> Result<TcpStream> {
     };
 
     stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
+        .set_read_timeout(Some(Duration::from_secs(3)))?;
 
     Ok(stream)
 }
