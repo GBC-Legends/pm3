@@ -1,5 +1,5 @@
 use crate::utils::start_helpers;
-use std::io::{BufRead, BufReader, Result, Write};
+use std::io::{BufRead, BufReader, Error, Result, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -92,10 +92,10 @@ pub fn start_program(
 
     let exec_dir = match std::env::current_dir() {
         Ok(c) => c,
-        Err(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to get current directory",
+        Err(e) => {
+            return Err(Error::new(
+                e.kind(),
+                format!("pm3: failed to get current directory: {}", e),
             ));
         }
     };
