@@ -1,9 +1,10 @@
 use crate::command_handler::commands::RunnerCommand;
+use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
 use crate::utils::bytes_safe_formatting::format_bytes;
 use anyhow::Result;
 use std::sync::Arc;
-use sysinfo::{Pid, System};
+use sysinfo::System;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -23,7 +24,7 @@ impl ProcessRunner {
         let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
         for cfg in configs_dir {
-            let process = PmProcess::new(cfg);
+            let process = PmProcess::new(cfg, idx::alloc_id());
             slf.processes.push(Arc::new(Mutex::new(process)));
         }
 
@@ -72,57 +73,8 @@ impl ProcessRunner {
                 biased;
                 _ = tick.tick() => {
                     for p in &self.processes {
-                        let (name, handle) = {
-                            let proc = p.lock().await;
-                            (proc.config.proc_name.clone(), Arc::clone(&proc.handle))
-                        };
-
-                        let prefix = format!("{name} [process]");
-
-                        let (pid_u32, exited) = {
-                            let mut h = handle.lock().await;
-
-                            let Some(child) = h.as_mut() else {
-                                eprintln!("[pm3] {prefix} no handle");
-                                continue;
-                            };
-
-                            let pid = child.id().unwrap_or(0);
-
-                            let exited = match child.try_wait() {
-                                Ok(Some(status)) => {
-                                    println!("{prefix} exited: {status}");
-                                    *h = None;
-                                    true
-                                }
-                                Ok(None) => false,
-                                Err(e) => {
-                                    eprintln!("[pm3] {prefix} try_wait error: {e}");
-                                    false
-                                }
-                            };
-
-                            (pid, exited)
-                        };
-
-                        if exited {
-                            continue;
-                        }
-
-                        let pid = Pid::from_u32(pid_u32);
-                        sys.refresh_process(pid);
-
-                        if let Some(proc_) = sys.process(pid) {
-                            let mem_mb = proc_.memory() as f64;
-                            let cpu = proc_.cpu_usage();
-                            println!(
-                                "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
-                                cpu,
-                                format_bytes(mem_mb)
-                            );
-                        } else {
-                            println!("{prefix} process not found (pid={})", pid.as_u32());
-                        }
+                        let mut process_lock = p.lock().await;
+                        process_lock.monitor(&mut sys).await
                     }
                 }
 
@@ -159,7 +111,7 @@ impl ProcessRunner {
                     return Ok(());
                 }
 
-                let mut process = PmProcess::new(config.clone());
+                let mut process = PmProcess::new(config.clone(), idx::alloc_id());
 
                 if let Err(e) = process.dump_config() {
                     let _ = reply.send(Err(e.into()));
