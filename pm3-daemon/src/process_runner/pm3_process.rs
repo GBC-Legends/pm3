@@ -113,6 +113,30 @@ impl PmProcess {
         Ok(())
     }
 
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        let mut child = {
+            let mut guard = self.inner.lock().await;
+            guard.handle.take()
+        };
+
+        let Some(child_ref) = child.as_mut() else {
+            return Err(anyhow::Error::msg(format!(
+                "Error stopping program: {}({})",
+                self.proc_name.as_ref(),
+                self.idx
+            )));
+        };
+
+        if let Err(e) = child_ref.kill().await {
+            let mut guard = self.inner.lock().await;
+            guard.handle = child;
+            return Err(anyhow::Error::new(e));
+        }
+
+        self.set_status(PmProcessStatus::Stopped).await;
+        Ok(())
+    }
+
     pub async fn monitor(&self, sys: &mut System) {
         let (name, handle) = { (self.proc_name.clone(), &mut self.inner.lock().await.handle) };
 

@@ -130,11 +130,46 @@ impl ProcessRunner {
                 stop_programs,
                 reply,
             } => {
-                for i in stop_programs {
-                    println!("stopping {i}");
+                let mut finished_processes = Vec::new();
+
+                for program_id in stop_programs {
+                    match program_id.parse::<u64>() {
+                        Ok(id) => {
+                            let process = self.processes.iter().find(|p| p.idx == id);
+                            if let Some(process) = process {
+                                match process.stop().await {
+                                    Ok(()) => {
+                                        finished_processes.push(process.idx.to_string());
+                                    }
+                                    Err(e) => {
+                                        println!("Error stopping process: {}", e);
+                                    }
+                                };
+                            }
+                        }
+                        Err(_) => {
+                            let process = self
+                                .processes
+                                .iter()
+                                .find(|p| p.proc_name.as_ref() == program_id);
+                            if let Some(process) = process {
+                                match process.stop().await {
+                                    Ok(()) => {
+                                        finished_processes.push(process.idx.to_string());
+                                    }
+                                    Err(e) => {
+                                        println!("Error stopping process: {}", e);
+                                    }
+                                };
+                            }
+                        }
+                    }
                 }
 
-                let _ = reply.send(Ok("Stopped successfully".to_string()));
+                let _ = reply.send(Ok(format!(
+                    "Stopped {} successfully",
+                    finished_processes.join(", ")
+                )));
 
                 Ok(())
             }
