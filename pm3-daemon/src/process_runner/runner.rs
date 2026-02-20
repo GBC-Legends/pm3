@@ -138,6 +138,11 @@ impl ProcessRunner {
                         Ok(id) => {
                             let process = self.processes.iter().find(|p| p.idx == id);
                             if let Some(process) = process {
+                                if !process.is_active().await {
+                                    println!("process {program_id} is already stopped");
+                                    continue;
+                                }
+
                                 match process.stop().await {
                                     Ok(()) => {
                                         finished_processes.push(process.idx.to_string());
@@ -154,6 +159,10 @@ impl ProcessRunner {
                                 .iter()
                                 .find(|p| p.proc_name.as_ref() == program_id);
                             if let Some(process) = process {
+                                if !process.is_active().await {
+                                    println!("process {program_id} is already stopped");
+                                }
+
                                 match process.stop().await {
                                     Ok(()) => {
                                         finished_processes.push(process.idx.to_string());
