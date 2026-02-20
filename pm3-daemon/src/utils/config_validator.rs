@@ -28,7 +28,7 @@ pub fn verify_start_config(raw: &str) -> anyhow::Result<PmProcessConfig> {
         exec_name,
         exec_args,
         active,
-        extra: HashMap::new(),
+        _extra: HashMap::new(),
     })
 }
 

@@ -4,13 +4,12 @@ use crate::process_runner::pm3_process::PmProcess;
 use anyhow::Result;
 use std::sync::Arc;
 use sysinfo::System;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
 pub struct ProcessRunner {
-    pub processes: Vec<Arc<Mutex<PmProcess>>>,
+    pub processes: Vec<Arc<PmProcess>>,
 }
 
 impl ProcessRunner {
@@ -24,7 +23,7 @@ impl ProcessRunner {
 
         for cfg in configs_dir {
             let process = PmProcess::new(cfg, idx::alloc_id());
-            slf.processes.push(Arc::new(Mutex::new(process)));
+            slf.processes.push(Arc::new(process));
         }
 
         return slf;
@@ -37,18 +36,13 @@ impl ProcessRunner {
             let process = Arc::clone(process);
 
             set.spawn(async move {
-                let active = {
-                    let p = process.lock().await;
-                    p.process_status.is_active()
-                };
-
+                let active = process.is_active().await;
                 if !active {
                     return;
                 }
 
-                let mut p = process.lock().await;
-                if let Err(e) = p.awake().await {
-                    p.not_initialized();
+                if let Err(e) = process.awake().await {
+                    process.not_initialized().await;
                     eprintln!("[pm3] awake failed: {e}");
                 }
             });
@@ -73,8 +67,8 @@ impl ProcessRunner {
                 biased;
                 _ = tick.tick() => {
                     for p in &self.processes {
-                        let mut process_lock = p.lock().await;
-                        process_lock.monitor(&mut sys).await
+                        let process = Arc::clone(p);
+                        process.monitor(&mut sys).await;
                     }
                 }
 
@@ -101,7 +95,8 @@ impl ProcessRunner {
             RunnerCommand::Start { config, reply } => {
                 let mut exists = false;
                 for p in &self.processes {
-                    if p.lock().await.config.proc_name == config.proc_name {
+                    let process = Arc::clone(p);
+                    if process.proc_name.as_ref() == config.proc_name {
                         exists = true;
                         break;
                     }
@@ -111,9 +106,9 @@ impl ProcessRunner {
                     return Ok(());
                 }
 
-                let mut process = PmProcess::new(config.clone(), idx::alloc_id());
+                let process = PmProcess::new(config.clone(), idx::alloc_id());
 
-                if let Err(e) = process.dump_config() {
+                if let Err(e) = process.dump_config().await {
                     let _ = reply.send(Err(e.into()));
                     return Ok(());
                 }
@@ -123,7 +118,7 @@ impl ProcessRunner {
                     return Ok(());
                 }
 
-                let process_arc = Arc::new(Mutex::new(process));
+                let process_arc = Arc::new(process);
 
                 self.processes.push(process_arc);
 
