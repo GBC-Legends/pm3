@@ -1,16 +1,15 @@
 use crate::command_handler::commands::RunnerCommand;
+use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
-use crate::utils::bytes_safe_formatting::format_bytes;
 use anyhow::Result;
 use std::sync::Arc;
-use sysinfo::{Pid, System};
-use tokio::sync::Mutex;
+use sysinfo::System;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
 pub struct ProcessRunner {
-    pub processes: Vec<Arc<Mutex<PmProcess>>>,
+    pub processes: Vec<Arc<PmProcess>>,
 }
 
 impl ProcessRunner {
@@ -23,8 +22,8 @@ impl ProcessRunner {
         let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
         for cfg in configs_dir {
-            let process = PmProcess::new(cfg);
-            slf.processes.push(Arc::new(Mutex::new(process)));
+            let process = PmProcess::new(cfg, idx::alloc_id());
+            slf.processes.push(Arc::new(process));
         }
 
         return slf;
@@ -37,17 +36,13 @@ impl ProcessRunner {
             let process = Arc::clone(process);
 
             set.spawn(async move {
-                let active = {
-                    let p = process.lock().await;
-                    p.config.active
-                };
-
+                let active = process.is_active().await;
                 if !active {
                     return;
                 }
 
-                let mut p = process.lock().await;
-                if let Err(e) = p.awake().await {
+                if let Err(e) = process.awake().await {
+                    process.not_initialized().await;
                     eprintln!("[pm3] awake failed: {e}");
                 }
             });
@@ -72,56 +67,8 @@ impl ProcessRunner {
                 biased;
                 _ = tick.tick() => {
                     for p in &self.processes {
-                        let (name, handle) = {
-                            let proc = p.lock().await;
-                            (proc.config.proc_name.clone(), Arc::clone(&proc.handle))
-                        };
-
-                        let prefix = format!("{name} [process]");
-
-                        let (pid_u32, exited) = {
-                            let mut h = handle.lock().await;
-
-                            let Some(child) = h.as_mut() else {
-                                eprintln!("[pm3] {prefix} no handle");
-                                continue;
-                            };
-
-                            let pid = child.id().unwrap_or(0);
-
-                            let exited = match child.try_wait() {
-                                Ok(Some(status)) => {
-                                    println!("{prefix} exited: {status}");
-                                    *h = None;
-                                    true
-                                }
-                                Ok(None) => false,
-                                Err(e) => {
-                                    eprintln!("[pm3] {prefix} try_wait error: {e}");
-                                    false
-                                }
-                            };
-
-                            (pid, exited)
-                        };
-
-                        if exited {
-                            continue;
-                        }
-
-                        let pid = Pid::from_u32(pid_u32);
-                        sys.refresh_process(pid);
-
-                        if let Some(proc_) = sys.process(pid) {
-                            let mem_mb = proc_.memory() as f64;
-                            let cpu = proc_.cpu_usage();
-                            println!(
-                                "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
-                                cpu,
-                                format_bytes(mem_mb)
-                            );
-                        } else {
-                            println!("{prefix} process not found (pid={})", pid.as_u32());
+                        if p.is_active().await {
+                            p.monitor(&mut sys).await;
                         }
                     }
                 }
@@ -149,7 +96,8 @@ impl ProcessRunner {
             RunnerCommand::Start { config, reply } => {
                 let mut exists = false;
                 for p in &self.processes {
-                    if p.lock().await.config.proc_name == config.proc_name {
+                    let process = Arc::clone(p);
+                    if process.proc_name.as_ref() == config.proc_name {
                         exists = true;
                         break;
                     }
@@ -159,9 +107,9 @@ impl ProcessRunner {
                     return Ok(());
                 }
 
-                let mut process = PmProcess::new(config.clone());
+                let process = PmProcess::new(config.clone(), idx::alloc_id());
 
-                if let Err(e) = process.dump_config() {
+                if let Err(e) = process.dump_config().await {
                     let _ = reply.send(Err(e.into()));
                     return Ok(());
                 }
@@ -171,7 +119,7 @@ impl ProcessRunner {
                     return Ok(());
                 }
 
-                let process_arc = Arc::new(Mutex::new(process));
+                let process_arc = Arc::new(process);
 
                 self.processes.push(process_arc);
 
@@ -183,11 +131,46 @@ impl ProcessRunner {
                 stop_programs,
                 reply,
             } => {
-                for i in stop_programs {
-                    println!("stopping {i}");
+                let mut finished_processes = Vec::new();
+
+                for program_id in stop_programs {
+                    match program_id.parse::<u64>() {
+                        Ok(id) => {
+                            let process = self.processes.iter().find(|p| p.idx == id);
+                            if let Some(process) = process {
+                                match process.stop().await {
+                                    Ok(()) => {
+                                        finished_processes.push(process.idx.to_string());
+                                    }
+                                    Err(e) => {
+                                        println!("Error stopping process: {}", e);
+                                    }
+                                };
+                            }
+                        }
+                        Err(_) => {
+                            let process = self
+                                .processes
+                                .iter()
+                                .find(|p| p.proc_name.as_ref() == program_id);
+                            if let Some(process) = process {
+                                match process.stop().await {
+                                    Ok(()) => {
+                                        finished_processes.push(process.idx.to_string());
+                                    }
+                                    Err(e) => {
+                                        println!("Error stopping process: {}", e);
+                                    }
+                                };
+                            }
+                        }
+                    }
                 }
 
-                let _ = reply.send(Ok("Stopped successfully".to_string()));
+                let _ = reply.send(Ok(format!(
+                    "Stopped {} successfully",
+                    finished_processes.join(", ")
+                )));
 
                 Ok(())
             }

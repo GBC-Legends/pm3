@@ -10,7 +10,7 @@ pub(crate) struct PmProcessConfig {
     pub exec_args: Vec<String>,
     pub active: bool,
 
-    pub extra: HashMap<String, String>,
+    pub _extra: HashMap<String, String>,
 }
 
 impl FromStr for PmProcessConfig {
@@ -56,7 +56,7 @@ impl FromStr for PmProcessConfig {
             exec_name: PathBuf::from(exec_name),
             exec_args,
             active,
-            extra: map,
+            _extra: map,
         })
     }
 }

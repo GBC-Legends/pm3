@@ -1,7 +1,9 @@
+use crate::utils::bytes_safe_formatting::format_bytes;
 use crate::utils::pm3_safe_dir;
 use crate::{models::pm3_config::PmProcessConfig, utils::pm3_safe_cfg_handler};
 use std::path::PathBuf;
 use std::sync::Arc;
+use sysinfo::{Pid, System};
 use tokio::sync::Mutex;
 
 use std::{fs::File, process::Stdio};
@@ -9,31 +11,78 @@ use tokio::process::{Child, Command};
 
 #[derive(Debug)]
 pub struct PmProcess {
-    pub config: PmProcessConfig,
-    pub handle: Arc<Mutex<Option<Child>>>,
+    pub idx: u64,
+    pub proc_name: Arc<str>,
+    inner: Mutex<PmProcessInner>,
+}
+
+#[derive(Debug)]
+struct PmProcessInner {
+    config: PmProcessConfig,
+    handle: Option<Child>,
+    process_status: PmProcessStatus,
+}
+
+#[derive(Debug)]
+pub enum PmProcessStatus {
+    Disabled,
+    NotStarted,
+    Initializing,
+    InitializingFailed,
+    Running,
+    Stopped,
+    Exited(i32),
+    Finished(i32),
+}
+
+impl PmProcessStatus {
+    pub fn is_active(&self) -> bool {
+        match self {
+            PmProcessStatus::NotStarted => true,
+            PmProcessStatus::Initializing => true,
+            PmProcessStatus::Running => true,
+            _ => false,
+        }
+    }
 }
 
 impl PmProcess {
-    pub fn new(cfg: PmProcessConfig) -> Self {
+    pub fn new(cfg: PmProcessConfig, idx: u64) -> Self {
+        let starting_status = match cfg.active {
+            true => PmProcessStatus::NotStarted,
+            false => PmProcessStatus::Disabled,
+        };
+
+        let proc_name: Arc<str> = cfg.proc_name.clone().into();
+
         PmProcess {
-            config: cfg,
-            handle: Arc::new(Mutex::new(None)),
+            idx,
+            proc_name,
+            inner: Mutex::new(PmProcessInner {
+                config: cfg,
+                handle: None,
+                process_status: starting_status,
+            }),
         }
     }
 
-    pub async fn awake(&mut self) -> std::io::Result<()> {
-        let filename_abs = PathBuf::from(&self.config.exec_name);
+    pub async fn awake(&self) -> anyhow::Result<()> {
+        self.set_status(PmProcessStatus::Initializing).await;
+        let cfg = self.inner.lock().await.config.clone();
+
+        let filename_abs = PathBuf::from(&cfg.exec_name);
 
         if !filename_abs.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Executable not found",
-            ));
+            self.set_status(PmProcessStatus::InitializingFailed).await;
+            return Err(anyhow::Error::msg(format!(
+                "Executable not found: {}",
+                filename_abs.display()
+            )));
         }
 
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
 
-        let logs_dir = pm3_home_dir.join("processes").join(&self.config.proc_name);
+        let logs_dir = pm3_home_dir.join("processes").join(&cfg.proc_name);
         println!("Logs directory: {}", logs_dir.display());
 
         match tokio::fs::create_dir_all(&logs_dir).await {
@@ -48,31 +97,127 @@ impl PmProcess {
         let stderr = File::create(&stderr_path)?;
 
         let child = Command::new(&filename_abs)
-            .current_dir(&self.config.exec_dir)
-            .args(&self.config.exec_args)
+            .current_dir(&cfg.exec_dir)
+            .args(&cfg.exec_args)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;
 
         {
-            let mut guard = self.handle.lock().await;
-            *guard = Some(child);
+            let mut guard = self.inner.lock().await;
+            guard.handle = Some(child);
         }
 
-        println!("Process: {:?}", self);
+        self.set_status(PmProcessStatus::Running).await;
 
         Ok(())
     }
 
-    pub fn dump_config(&self) -> anyhow::Result<PathBuf> {
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        let mut child = {
+            let mut guard = self.inner.lock().await;
+            guard.handle.take()
+        };
+
+        let Some(child_ref) = child.as_mut() else {
+            return Err(anyhow::Error::msg(format!(
+                "Error stopping program: {}({})",
+                self.proc_name.as_ref(),
+                self.idx
+            )));
+        };
+
+        if let Err(e) = child_ref.kill().await {
+            let mut guard = self.inner.lock().await;
+            guard.handle = child;
+            return Err(anyhow::Error::new(e));
+        }
+
+        self.set_status(PmProcessStatus::Stopped).await;
+        Ok(())
+    }
+
+    pub async fn monitor(&self, sys: &mut System) {
+        let name = self.proc_name.clone();
+        let prefix = format!("{name} [process]");
+
+        let mut guard = self.inner.lock().await;
+
+        let Some(child) = guard.handle.as_mut() else {
+            if guard.process_status.is_active() {
+                eprintln!("[pm3] {prefix} no handle");
+            }
+            return;
+        };
+
+        let pid_u32 = child.id().unwrap_or(0);
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code().unwrap_or(-1);
+
+                guard.handle = None;
+
+                if code == 0 {
+                    guard.process_status = PmProcessStatus::Finished(code);
+                } else {
+                    guard.process_status = PmProcessStatus::Exited(code);
+                }
+
+                let printed_code = match guard.process_status {
+                    PmProcessStatus::Finished(c) | PmProcessStatus::Exited(c) => c,
+                    _ => -1,
+                };
+
+                println!("Process {name} exited with code {printed_code}");
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("[pm3] {prefix} try_wait error: {e}");
+                return;
+            }
+        }
+
+        drop(guard);
+
+        let pid = Pid::from_u32(pid_u32);
+        sys.refresh_process(pid);
+
+        if let Some(proc_) = sys.process(pid) {
+            let mem_mb = proc_.memory() as f64;
+            let cpu = proc_.cpu_usage();
+            println!(
+                "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
+                cpu,
+                format_bytes(mem_mb)
+            );
+        } else {
+            println!("{prefix} process not found (pid={})", pid.as_u32());
+        }
+    }
+
+    pub async fn dump_config(&self) -> anyhow::Result<PathBuf> {
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
 
         let config_file_path = pm3_home_dir
             .join("configs")
-            .join(format!("{}.proc", self.config.proc_name));
+            .join(format!("{}.proc", self.proc_name));
 
-        pm3_safe_cfg_handler::save_config(&self.config, &config_file_path)?;
+        pm3_safe_cfg_handler::save_config(&self.inner.lock().await.config, &config_file_path)?;
 
         Ok(config_file_path)
+    }
+
+    pub async fn is_active(&self) -> bool {
+        self.inner.lock().await.process_status.is_active()
+    }
+
+    pub async fn set_status(&self, status: PmProcessStatus) {
+        self.inner.lock().await.process_status = status;
+    }
+
+    pub async fn not_initialized(&self) {
+        self.set_status(PmProcessStatus::InitializingFailed).await;
     }
 }
