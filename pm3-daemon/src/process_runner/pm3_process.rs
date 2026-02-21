@@ -1,9 +1,10 @@
 use crate::utils::bytes_safe_formatting::format_bytes;
+use crate::utils::get_process_users::username_for_pid;
 use crate::utils::pm3_safe_dir;
 use crate::{models::pm3_config::PmProcessConfig, utils::pm3_safe_cfg_handler};
 use std::path::PathBuf;
 use std::sync::Arc;
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, System, Users};
 use tokio::sync::Mutex;
 
 use std::{fs::File, process::Stdio};
@@ -23,9 +24,10 @@ struct PmProcessInner {
     process_status: PmProcessStatus,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub enum PmProcessStatus {
     Disabled,
+    #[default]
     NotStarted,
     Initializing,
     InitializingFailed,
@@ -33,6 +35,18 @@ pub enum PmProcessStatus {
     Stopped,
     Exited(i32),
     Finished(i32),
+}
+
+#[derive(Debug, Default)]
+pub struct PmProcessStatusInfo {
+    id: u64,
+    name: String,
+    status: PmProcessStatus,
+    pid: Option<u32>,
+    uptime: Option<u64>,
+    cpu_usage: Option<f32>,
+    memory_usage: Option<u64>,
+    user: Option<String>,
 }
 
 impl PmProcessStatus {
@@ -135,6 +149,71 @@ impl PmProcess {
 
         self.set_status(PmProcessStatus::Stopped).await;
         Ok(())
+    }
+
+    pub async fn get_current_status(
+        &self,
+        sys: &mut System,
+    ) -> anyhow::Result<PmProcessStatusInfo> {
+        let process_guard = self.inner.lock().await;
+
+        let Some(child) = process_guard.handle.as_ref() else {
+            return Ok(PmProcessStatusInfo {
+                id: self.idx,
+                name: self.proc_name.to_string(),
+                status: PmProcessStatus::Stopped,
+                pid: None,
+                uptime: None,
+                cpu_usage: None,
+                memory_usage: None,
+                user: None,
+            });
+        };
+
+        let Some(pid_u32) = child.id() else {
+            return Ok(PmProcessStatusInfo {
+                id: self.idx,
+                name: self.proc_name.to_string(),
+                ..Default::default()
+            });
+        };
+
+        let pid = Pid::from_u32(pid_u32);
+
+        sys.refresh_process(pid);
+
+        let Some(p) = sys.process(pid) else {
+            return Ok(PmProcessStatusInfo {
+                id: self.idx,
+                name: self.proc_name.to_string(),
+                status: process_guard.process_status.clone(),
+                pid: Some(pid_u32),
+                uptime: None,
+                cpu_usage: None,
+                memory_usage: None,
+                user: None,
+            });
+        };
+
+        let uptime = p.run_time();
+
+        let cpu = p.cpu_usage();
+
+        let mem = p.memory();
+
+        let user = username_for_pid(&pid);
+        println!("uid: {:?}", p.user_id());
+
+        Ok(PmProcessStatusInfo {
+            id: self.idx,
+            name: self.proc_name.to_string(),
+            status: process_guard.process_status.clone(),
+            pid: Some(pid_u32),
+            uptime: Some(uptime),
+            cpu_usage: Some(cpu),
+            memory_usage: Some(mem),
+            user,
+        })
     }
 
     pub async fn monitor(&self, sys: &mut System) {

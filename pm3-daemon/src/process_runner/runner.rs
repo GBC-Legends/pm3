@@ -68,6 +68,9 @@ impl ProcessRunner {
                 _ = tick.tick() => {
                     for p in &self.processes {
                         if p.is_active().await {
+                            if p.idx == 1 {
+                                println!("Process 1 status: {:?}", p.get_current_status(&mut sys).await.unwrap());
+                            }
                             p.monitor(&mut sys).await;
                         }
                     }
