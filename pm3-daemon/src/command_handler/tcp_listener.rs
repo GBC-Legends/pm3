@@ -108,6 +108,11 @@ impl TcpCommandHandler {
                 .await?;
                 Ok(reply_rx.await??)
             }
+            "list" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::List { reply: reply_tx }).await?;
+                Ok(reply_rx.await??)
+            }
 
             _ => anyhow::bail!("unknown command"),
         }
