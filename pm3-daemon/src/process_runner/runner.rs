@@ -68,9 +68,6 @@ impl ProcessRunner {
                 _ = tick.tick() => {
                     for p in &self.processes {
                         if p.is_active().await {
-                            if p.idx == 1 {
-                                println!("Process 1 status: {:?}", p.get_current_status(&mut sys).await.unwrap());
-                            }
                             p.monitor(&mut sys).await;
                         }
                     }
@@ -167,6 +164,32 @@ impl ProcessRunner {
                 };
 
                 let _ = reply.send(Ok(msg));
+                Ok(())
+            }
+            RunnerCommand::List { reply } => {
+                let mut system = System::new();
+
+                let mut lines: Vec<String> = Vec::with_capacity(self.processes.len());
+
+                for process in &self.processes {
+                    match process.get_current_status(&mut system).await {
+                        Ok(info) => lines.push(info.to_qs_line()),
+                        Err(e) => {
+                            lines.push(format!("status=error&msg={}", e));
+                        }
+                    }
+                }
+
+                let mut out = String::new();
+                out.push_str(&lines.len().to_string());
+                out.push('\n');
+
+                if !lines.is_empty() {
+                    out.push_str(&lines.join("\n"));
+                    out.push('\n');
+                }
+
+                let _ = reply.send(Ok(out));
                 Ok(())
             }
         }

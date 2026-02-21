@@ -49,6 +49,80 @@ pub struct PmProcessStatusInfo {
     user: Option<String>,
 }
 
+impl PmProcessStatusInfo {
+    pub fn to_qs_line(&self) -> String {
+        fn enc(s: &str) -> String {
+            let mut out = String::with_capacity(s.len() + s.len() / 2);
+            for &b in s.as_bytes() {
+                let ok = matches!(
+                    b,
+                    b'A'..=b'Z'
+                        | b'a'..=b'z'
+                        | b'0'..=b'9'
+                        | b'-'
+                        | b'.'
+                        | b'_'
+                        | b'~'
+                );
+                if ok {
+                    out.push(b as char);
+                } else {
+                    out.push('%');
+                    out.push_str(&format!("{:02X}", b));
+                }
+            }
+            out
+        }
+
+        fn push_kv(dst: &mut String, k: &str, v: &str) {
+            if !dst.is_empty() {
+                dst.push('&');
+            }
+            dst.push_str(&enc(k));
+            dst.push('=');
+            dst.push_str(&enc(v));
+        }
+
+        fn push_opt<T: ToString>(dst: &mut String, k: &str, v: Option<T>) {
+            if let Some(v) = v {
+                push_kv(dst, k, &v.to_string());
+            }
+        }
+
+        let mut s = String::new();
+
+        push_kv(&mut s, "id", &self.id.to_string());
+        push_kv(&mut s, "name", &self.name);
+
+        let mut exit_code: Option<i32> = None;
+        let status = match self.status {
+            PmProcessStatus::Running => "running",
+            PmProcessStatus::Exited(code) | PmProcessStatus::Finished(code) => {
+                exit_code = Some(code);
+                "exited"
+            }
+            _ => "stopped",
+        };
+        push_kv(&mut s, "status", status);
+        push_opt(&mut s, "exit_code", exit_code);
+
+        push_opt(&mut s, "pid", self.pid);
+        push_opt(&mut s, "uptime", self.uptime);
+
+        if let Some(cpu) = self.cpu_usage {
+            push_kv(&mut s, "cpu", &format!("{:.5}", cpu));
+        }
+
+        push_opt(&mut s, "mem", self.memory_usage);
+
+        if let Some(user) = &self.user {
+            push_kv(&mut s, "user", user);
+        }
+
+        s
+    }
+}
+
 impl PmProcessStatus {
     pub fn is_active(&self) -> bool {
         match self {
@@ -202,7 +276,6 @@ impl PmProcess {
         let mem = p.memory();
 
         let user = username_for_pid(&pid);
-        println!("uid: {:?}", p.user_id());
 
         Ok(PmProcessStatusInfo {
             id: self.idx,
