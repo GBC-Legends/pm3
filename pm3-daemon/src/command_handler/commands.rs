@@ -15,4 +15,7 @@ pub enum RunnerCommand {
         stop_programs: Vec<String>,
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
+    List {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }

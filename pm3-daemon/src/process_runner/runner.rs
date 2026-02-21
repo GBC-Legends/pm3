@@ -131,47 +131,65 @@ impl ProcessRunner {
                 stop_programs,
                 reply,
             } => {
-                let mut finished_processes = Vec::new();
+                let mut finished = Vec::<String>::new();
 
                 for program_id in stop_programs {
-                    match program_id.parse::<u64>() {
-                        Ok(id) => {
-                            let process = self.processes.iter().find(|p| p.idx == id);
-                            if let Some(process) = process {
-                                match process.stop().await {
-                                    Ok(()) => {
-                                        finished_processes.push(process.idx.to_string());
-                                    }
-                                    Err(e) => {
-                                        println!("Error stopping process: {}", e);
-                                    }
-                                };
-                            }
-                        }
-                        Err(_) => {
-                            let process = self
-                                .processes
+                    let proc_opt = program_id
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|id| self.processes.iter().find(|p| p.idx == id))
+                        .or_else(|| {
+                            self.processes
                                 .iter()
-                                .find(|p| p.proc_name.as_ref() == program_id);
-                            if let Some(process) = process {
-                                match process.stop().await {
-                                    Ok(()) => {
-                                        finished_processes.push(process.idx.to_string());
-                                    }
-                                    Err(e) => {
-                                        println!("Error stopping process: {}", e);
-                                    }
-                                };
-                            }
+                                .find(|p| p.proc_name.as_ref() == program_id)
+                        });
+
+                    if let Some(proc) = proc_opt {
+                        if !proc.is_active().await {
+                            println!("process {program_id} is already stopped");
+                            continue;
+                        }
+
+                        match proc.stop().await {
+                            Ok(()) => finished.push(proc.idx.to_string()),
+                            Err(e) => println!("Error stopping process: {e}"),
                         }
                     }
                 }
 
-                let _ = reply.send(Ok(format!(
-                    "Stopped {} successfully",
-                    finished_processes.join(", ")
-                )));
+                let msg = if finished.is_empty() {
+                    "No processes were stopped".to_string()
+                } else {
+                    format!("Stopped {} successfully", finished.join(", "))
+                };
 
+                let _ = reply.send(Ok(msg));
+                Ok(())
+            }
+            RunnerCommand::List { reply } => {
+                let mut system = System::new();
+
+                let mut lines: Vec<String> = Vec::with_capacity(self.processes.len());
+
+                for process in &self.processes {
+                    match process.get_current_status(&mut system).await {
+                        Ok(info) => lines.push(info.to_qs_line()),
+                        Err(e) => {
+                            lines.push(format!("status=error&msg={}", e));
+                        }
+                    }
+                }
+
+                let mut out = String::new();
+                out.push_str(&lines.len().to_string());
+                out.push('\n');
+
+                if !lines.is_empty() {
+                    out.push_str(&lines.join("\n"));
+                    out.push('\n');
+                }
+
+                let _ = reply.send(Ok(out));
                 Ok(())
             }
         }
