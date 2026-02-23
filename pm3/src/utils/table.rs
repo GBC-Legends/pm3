@@ -1,7 +1,7 @@
-use tabled::Table;
-use tabled::settings::{Color, Modify, Style, object::Rows, object::Cell, Alignment};
-use tabled::settings::object::Columns;
 use crate::models::process::{PmProcessStatusInfo, ProcessStatus};
+use tabled::Table;
+use tabled::settings::object::Columns;
+use tabled::settings::{Alignment, Color, Modify, Style, object::Cell, object::Rows};
 
 use tabled::Tabled;
 
@@ -71,9 +71,9 @@ fn fmt_exit(exit: Option<i32>) -> String {
 }
 
 pub fn print_process_table(processes: &[PmProcessStatusInfo]) {
-
-    let rows: Vec<ProcessRow> = processes.iter().map(|p| {
-        ProcessRow {
+    let rows: Vec<ProcessRow> = processes
+        .iter()
+        .map(|p| ProcessRow {
             id: p.id,
             name: p.name.clone(),
             pid: fmt_pid(p.pid),
@@ -87,8 +87,8 @@ pub fn print_process_table(processes: &[PmProcessStatusInfo]) {
             user: p.user.clone().unwrap_or_else(|| "-".into()),
             uptime: fmt_uptime(p.uptime),
             exit: fmt_exit(p.exit_code),
-        }
-    }).collect();
+        })
+        .collect();
 
     let mut table = Table::new(rows);
 

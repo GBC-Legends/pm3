@@ -1,9 +1,7 @@
 pub mod ping;
 pub mod start;
-pub mod stop;
 pub mod status;
-pub mod ls;
-pub mod list;
+pub mod stop;
 
 use std::io::{ErrorKind, Result};
 use std::net::TcpStream;
