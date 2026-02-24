@@ -19,6 +19,7 @@ static PATH_MAP: OnceLock<Mutex<HashMap<String, (PathBuf, PathBuf)>>> = OnceLock
 
 const MAX_BUF_PER_PROC: usize = 8 * 1024 * 1024; // 8MB
 const FLUSH_SECS: u64 = 15;
+const BASE_BUF_CAP: usize = 4096;
 
 type FileCache = HashMap<String, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
 type BufCache = HashMap<String, (Vec<u8>, Vec<u8>)>;
@@ -35,6 +36,12 @@ impl LoggingService {
         let _ = PATH_MAP.set(Mutex::new(HashMap::new()));
 
         rx
+    }
+
+    fn shrink_buf(buf: &mut Vec<u8>) {
+        if buf.capacity() > BASE_BUF_CAP {
+            buf.shrink_to(BASE_BUF_CAP);
+        }
     }
 
     fn ensure_paths(proc_name: &str) -> (PathBuf, PathBuf) {
@@ -161,6 +168,7 @@ impl LoggingService {
                     return;
                 }
                 out_buf.clear();
+                Self::shrink_buf(out_buf);
             } else {
                 return;
             }
@@ -174,6 +182,7 @@ impl LoggingService {
                     return;
                 }
                 err_buf.clear();
+                Self::shrink_buf(err_buf);
             } else {
                 return;
             }
