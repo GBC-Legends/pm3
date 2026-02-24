@@ -5,10 +5,9 @@ use crate::utils::pm3_safe_dir;
 use crate::{models::pm3_config::PmProcessConfig, utils::pm3_safe_cfg_handler};
 use std::path::PathBuf;
 use std::sync::Arc;
-use sysinfo::{Pid, System, Users};
+use sysinfo::{Pid, System};
 use tokio::sync::Mutex;
 
-use std::{fs::File, process::Stdio};
 use tokio::process::{Child, Command};
 
 #[derive(Debug)]

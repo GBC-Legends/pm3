@@ -37,12 +37,6 @@ impl LoggingService {
         rx
     }
 
-    pub fn register_proc(proc_name: &str, stdout_path: PathBuf, stderr_path: PathBuf) {
-        let map = PATH_MAP.get().expect("PATH_MAP not initialized");
-        let mut map = map.lock().expect("PATH_MAP poisoned");
-        map.insert(proc_name.to_string(), (stdout_path, stderr_path));
-    }
-
     fn ensure_paths(proc_name: &str) -> (PathBuf, PathBuf) {
         let map = PATH_MAP.get().expect("PATH_MAP not initialized");
         let mut map = map.lock().expect("PATH_MAP poisoned");
