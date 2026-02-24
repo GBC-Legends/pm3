@@ -17,6 +17,13 @@ pub struct LoggingService;
 static GLOBAL_TX: OnceLock<mpsc::UnboundedSender<LogMsg>> = OnceLock::new();
 static PATH_MAP: OnceLock<Mutex<HashMap<String, (PathBuf, PathBuf)>>> = OnceLock::new();
 
+const MAX_BUF_PER_PROC: usize = 8 * 1024 * 1024; // 8MB
+const FLUSH_SECS: u64 = 15;
+
+type FileCache = HashMap<String, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
+type BufCache = HashMap<String, (Vec<u8>, Vec<u8>)>;
+type Activity15s = HashMap<String, (u64, u64)>;
+
 impl LoggingService {
     pub fn init() -> mpsc::UnboundedReceiver<LogMsg> {
         if GLOBAL_TX.get().is_some() {
@@ -25,7 +32,6 @@ impl LoggingService {
 
         let (tx, rx) = mpsc::unbounded_channel::<LogMsg>();
         let _ = GLOBAL_TX.set(tx);
-
         let _ = PATH_MAP.set(Mutex::new(HashMap::new()));
 
         rx
@@ -57,91 +63,197 @@ impl LoggingService {
         (stdout_path, stderr_path)
     }
 
-    async fn open_files(
+    async fn ensure_exists_or_reopen(
+        proc_name: &str,
         stdout_path: &PathBuf,
         stderr_path: &PathBuf,
-    ) -> std::io::Result<(tokio::fs::File, tokio::fs::File)> {
-        if let Some(parent) = stdout_path.parent() {
-            fs::create_dir_all(parent).await?;
+        file_cache: &mut FileCache,
+    ) {
+        let out_exists = tokio::fs::try_exists(stdout_path).await.unwrap_or(false);
+        let err_exists = tokio::fs::try_exists(stderr_path).await.unwrap_or(false);
+
+        if !out_exists || !err_exists {
+            eprintln!(
+                "[pm3][{}][warn] log file missing (stdout_exists={}, stderr_exists={}) -> reopening",
+                proc_name, out_exists, err_exists
+            );
+            if let Some((out_f, err_f)) = file_cache.get_mut(proc_name) {
+                if !out_exists {
+                    *out_f = None;
+                }
+                if !err_exists {
+                    *err_f = None;
+                }
+            }
         }
-
-        let out_f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(stdout_path)
-            .await?;
-
-        let err_f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(stderr_path)
-            .await?;
-
-        Ok((out_f, err_f))
     }
 
     async fn ensure_file_handles(
         proc_name: &str,
         stdout_path: &PathBuf,
         stderr_path: &PathBuf,
-        file_cache: &mut HashMap<String, (tokio::fs::File, tokio::fs::File)>,
+        file_cache: &mut FileCache,
     ) -> bool {
-        if file_cache.contains_key(proc_name) {
-            return true;
+        let entry = file_cache
+            .entry(proc_name.to_string())
+            .or_insert((None, None));
+
+        if let Some(parent) = stdout_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent).await {
+                eprintln!("create_dir_all error ({}): {}", proc_name, e);
+                return false;
+            }
         }
 
-        match Self::open_files(stdout_path, stderr_path).await {
-            Ok((out_f, err_f)) => {
-                file_cache.insert(proc_name.to_string(), (out_f, err_f));
-                true
+        if entry.0.is_none() {
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(stdout_path)
+                .await
+            {
+                Ok(f) => entry.0 = Some(f),
+                Err(e) => {
+                    eprintln!("open stdout log error ({}): {}", proc_name, e);
+                    return false;
+                }
             }
-            Err(e) => {
-                eprintln!("open log files error ({}): {}", proc_name, e);
-                false
+        }
+
+        if entry.1.is_none() {
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(stderr_path)
+                .await
+            {
+                Ok(f) => entry.1 = Some(f),
+                Err(e) => {
+                    eprintln!("open stderr log error ({}): {}", proc_name, e);
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    async fn flush_proc(proc_name: &str, buf_cache: &mut BufCache, file_cache: &mut FileCache) {
+        let Some((out_buf, err_buf)) = buf_cache.get_mut(proc_name) else {
+            return;
+        };
+
+        if out_buf.is_empty() && err_buf.is_empty() {
+            return;
+        }
+
+        let (stdout_path, stderr_path) = Self::ensure_paths(proc_name);
+
+        Self::ensure_exists_or_reopen(proc_name, &stdout_path, &stderr_path, file_cache).await;
+
+        if !Self::ensure_file_handles(proc_name, &stdout_path, &stderr_path, file_cache).await {
+            return;
+        }
+
+        let Some((out_f_opt, err_f_opt)) = file_cache.get_mut(proc_name) else {
+            return;
+        };
+
+        if !out_buf.is_empty() {
+            if let Some(out_f) = out_f_opt.as_mut() {
+                if let Err(e) = out_f.write_all(out_buf).await {
+                    eprintln!("stdout write error ({}): {} -> will reopen", proc_name, e);
+                    *out_f_opt = None;
+                    return;
+                }
+                out_buf.clear();
+            } else {
+                return;
+            }
+        }
+
+        if !err_buf.is_empty() {
+            if let Some(err_f) = err_f_opt.as_mut() {
+                if let Err(e) = err_f.write_all(err_buf).await {
+                    eprintln!("stderr write error ({}): {} -> will reopen", proc_name, e);
+                    *err_f_opt = None;
+                    return;
+                }
+                err_buf.clear();
+            } else {
+                return;
             }
         }
     }
 
+    async fn flush_all(buf_cache: &mut BufCache, file_cache: &mut FileCache) {
+        let procs: Vec<String> = buf_cache.keys().cloned().collect();
+        for proc in procs {
+            Self::flush_proc(&proc, buf_cache, file_cache).await;
+        }
+    }
+
+    fn close_idle_fds(file_cache: &mut FileCache, activity_15s: &mut Activity15s) {
+        let procs: Vec<String> = activity_15s.keys().cloned().collect();
+
+        for proc in procs {
+            let (out_b, err_b) = activity_15s.get(&proc).copied().unwrap_or((0, 0));
+
+            if let Some((out_f, err_f)) = file_cache.get_mut(&proc) {
+                if out_b == 0 {
+                    *out_f = None;
+                }
+                if err_b == 0 {
+                    *err_f = None;
+                }
+            }
+
+            activity_15s.insert(proc, (0, 0));
+        }
+    }
+
     pub async fn dispatch(mut rx: mpsc::UnboundedReceiver<LogMsg>) {
-        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut bytes_last_15s: u64 = 0;
-        let mut file_cache: HashMap<String, (tokio::fs::File, tokio::fs::File)> = HashMap::new();
+
+        let mut file_cache: FileCache = HashMap::new();
+        let mut buf_cache: BufCache = HashMap::new();
+        let mut activity_15s: Activity15s = HashMap::new();
 
         loop {
             tokio::select! {
                 msg = rx.recv() => {
                     match msg {
                         Some(msg) => {
-                            println!("Received log message: {:?}", msg);
-                            bytes_last_15s += msg.bytes.len() as u64;
+                            let n = msg.bytes.len() as u64;
+                            bytes_last_15s += n;
 
-                            let (stdout_path, stderr_path) = Self::ensure_paths(&msg.proc_name);
-
-                            if !Self::ensure_file_handles(&msg.proc_name, &stdout_path, &stderr_path, &mut file_cache).await {
-                                println!("123 failed");
-                                continue;
+                            let act = activity_15s.entry(msg.proc_name.clone()).or_insert((0,0));
+                            match msg.stream {
+                                StreamKind::Stdout => act.0 += n,
+                                StreamKind::Stderr => act.1 += n,
                             }
 
-                            let write_res = if let Some((out_f, err_f)) = file_cache.get_mut(&msg.proc_name) {
-                                match msg.stream {
-                                    StreamKind::Stdout => out_f.write_all(&msg.bytes).await,
-                                    StreamKind::Stderr => err_f.write_all(&msg.bytes).await,
-                                }
-                            } else {
-                                println!("133 failed");
-                                continue;
-                            };
+                            let entry = buf_cache
+                                .entry(msg.proc_name.clone())
+                                .or_insert_with(|| (Vec::with_capacity(4096), Vec::with_capacity(4096)));
 
-                            if let Err(e) = write_res {
-                                eprintln!("write error ({}): {} -> will reopen", msg.proc_name, e);
-                                file_cache.remove(&msg.proc_name);
+                            match msg.stream {
+                                StreamKind::Stdout => entry.0.extend_from_slice(&msg.bytes),
+                                StreamKind::Stderr => entry.1.extend_from_slice(&msg.bytes),
+                            }
 
-                                println!("141 failed");
+                            let total = entry.0.len() + entry.1.len();
+                            if total >= MAX_BUF_PER_PROC {
+                                Self::flush_proc(&msg.proc_name, &mut buf_cache, &mut file_cache).await;
                             }
                         }
-                        None => break,
+                        None => {
+                            Self::flush_all(&mut buf_cache, &mut file_cache).await;
+                            break;
+                        }
                     }
                 }
 
@@ -149,26 +261,13 @@ impl LoggingService {
                     println!(
                         "[pm3][stats] received {} bytes in last 15s (~{} B/s)",
                         bytes_last_15s,
-                        bytes_last_15s / 15
+                        bytes_last_15s / FLUSH_SECS
                     );
                     bytes_last_15s = 0;
 
-                    let proc_names: Vec<String> = file_cache.keys().cloned().collect();
+                    Self::flush_all(&mut buf_cache, &mut file_cache).await;
 
-                    for proc in proc_names {
-                        let (stdout_path, stderr_path) = Self::ensure_paths(&proc);
-
-                        let out_exists = tokio::fs::try_exists(&stdout_path).await.unwrap_or(false);
-                        let err_exists = tokio::fs::try_exists(&stderr_path).await.unwrap_or(false);
-
-                        if !out_exists || !err_exists {
-                            eprintln!(
-                                "[pm3][{}][warn] log file missing (stdout_exists={}, stderr_exists={}) -> reopening",
-                                proc, out_exists, err_exists
-                            );
-                            file_cache.remove(&proc);
-                        }
-                    }
+                    Self::close_idle_fds(&mut file_cache, &mut activity_15s);
                 }
             }
         }
