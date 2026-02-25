@@ -23,7 +23,7 @@ impl MetricsService {
             panic!("MetricsService::init() called more than once");
         }
 
-        let (tx, rx) = mpsc::channel(50);
+        let (tx, rx) = mpsc::channel(256);
         GLOBAL_TX.set(tx).expect("Failed to set GLOBAL_TX");
         rx
     }
@@ -37,11 +37,10 @@ impl MetricsService {
 
     pub async fn dispatch(mut rx: mpsc::Receiver<MetricsLog>) {
         let db_path = pm3_home_dir_safe().join("metrics.db");
-
         let db_tx = spawn_db_worker(db_path);
 
         const FLUSH_SECS: u64 = 1;
-        const MAX_BATCH: usize = 1;
+        const MAX_BATCH: usize = 256;
 
         let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -52,24 +51,21 @@ impl MetricsService {
             select! {
                 _ = tick.tick() => {
                     if !batch.is_empty() {
-                        if db_tx.try_send(DbMsg::Batch(std::mem::take(&mut batch))).is_err() {
-                            println!("pm3::metrics_service error with sending batch");
-                        }
+                        let _ = db_tx.send(DbMsg::Batch(std::mem::take(&mut batch))).await;
                     }
                 }
 
                 msg = rx.recv() => match msg {
                     Some(log) => {
-                        let ts = now_unix_secs();
                         batch.push(MetricsRow {
                             proc_name: log.proc_name,
-                            ts,
+                            ts: now_unix_secs(),
                             cpu: log.cpu_usage as f64,
                             mem: log.memory_usage as i64,
                         });
 
                         if batch.len() >= MAX_BATCH {
-                            let _ = db_tx.try_send(DbMsg::Batch(std::mem::take(&mut batch)));
+                            let _ = db_tx.send(DbMsg::Batch(std::mem::take(&mut batch))).await;
                         }
                     }
                     None => {
@@ -100,12 +96,12 @@ enum DbMsg {
 }
 
 fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
-    let (tx, mut rx) = mpsc::channel::<DbMsg>(32);
+    let (tx, mut rx) = mpsc::channel::<DbMsg>(64);
 
     std::thread::Builder::new()
         .name("pm3-metrics-sqlite".into())
         .spawn(move || {
-            use rusqlite::{params, Connection};
+            use rusqlite::{params, Connection, TransactionBehavior};
 
             let mut conn = match Connection::open(&db_path) {
                 Ok(c) => c,
@@ -115,12 +111,15 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
                 }
             };
 
-            let _ = conn.execute_batch(
+            let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+
+            if let Err(e) = conn.execute_batch(
                 r#"
-                PRAGMA journal_mode=WAL;
-                PRAGMA synchronous=NORMAL;
-                PRAGMA temp_store=MEMORY;
-                PRAGMA foreign_keys=ON;
+                PRAGMA journal_mode = DELETE;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA temp_store = MEMORY;
+                PRAGMA busy_timeout = 5000;
+                PRAGMA foreign_keys = ON;
 
                 CREATE TABLE IF NOT EXISTS metrics (
                     proc_name TEXT NOT NULL,
@@ -128,9 +127,12 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
                     cpu       REAL NOT NULL,
                     mem       INTEGER NOT NULL,
                     PRIMARY KEY (proc_name, ts)
-                );
+                ) WITHOUT ROWID;
                 "#,
-            );
+            ) {
+                eprintln!("metrics sqlite init error: {}", e);
+                return;
+            }
 
             while let Some(msg) = rx.blocking_recv() {
                 match msg {
@@ -139,7 +141,7 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
                             continue;
                         }
 
-                        let tx = match conn.transaction() {
+                        let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
                             Ok(t) => t,
                             Err(e) => {
                                 eprintln!("metrics sqlite begin tx error: {}", e);
@@ -149,7 +151,7 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
 
                         {
                             let mut stmt = match tx.prepare_cached(
-                                "INSERT OR REPLACE INTO metrics (proc_name, ts, cpu, mem) VALUES (?1, ?2, ?3, ?4)"
+                                "INSERT OR REPLACE INTO metrics (proc_name, ts, cpu, mem) VALUES (?1, ?2, ?3, ?4)",
                             ) {
                                 Ok(s) => s,
                                 Err(e) => {
@@ -159,7 +161,9 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
                             };
 
                             for r in rows {
-                                if let Err(e) = stmt.execute(params![r.proc_name, r.ts, r.cpu, r.mem]) {
+                                if let Err(e) =
+                                    stmt.execute(params![r.proc_name, r.ts, r.cpu, r.mem])
+                                {
                                     eprintln!("metrics sqlite insert error: {}", e);
                                 }
                             }
