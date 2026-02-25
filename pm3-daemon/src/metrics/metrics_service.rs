@@ -1,4 +1,5 @@
 use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,7 +23,6 @@ impl MetricsService {
         if GLOBAL_TX.get().is_some() {
             panic!("MetricsService::init() called more than once");
         }
-
         let (tx, rx) = mpsc::channel(256);
         GLOBAL_TX.set(tx).expect("Failed to set GLOBAL_TX");
         rx
@@ -57,11 +57,24 @@ impl MetricsService {
 
                 msg = rx.recv() => match msg {
                     Some(log) => {
+                        let ts = now_unix_secs();
+
+                        let cpu_x10: u16 = {
+                            let v = (log.cpu_usage * 10.0).round();
+                            let v = v.clamp(0.0, 65535.0);
+                            v as u16
+                        };
+
+                        let mem_kib: u32 = {
+                            let kib = (log.memory_usage + 512) / 1024;
+                            if kib > u32::MAX as u64 { u32::MAX } else { kib as u32 }
+                        };
+
                         batch.push(MetricsRow {
                             proc_name: log.proc_name,
-                            ts: now_unix_secs(),
-                            cpu: log.cpu_usage as f64,
-                            mem: log.memory_usage as i64,
+                            ts,
+                            cpu_x10,
+                            mem_kib,
                         });
 
                         if batch.len() >= MAX_BATCH {
@@ -85,8 +98,8 @@ impl MetricsService {
 struct MetricsRow {
     proc_name: String,
     ts: i64,
-    cpu: f64,
-    mem: i64,
+    cpu_x10: u16,
+    mem_kib: u32,
 }
 
 #[derive(Debug)]
@@ -101,7 +114,7 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
     std::thread::Builder::new()
         .name("pm3-metrics-sqlite".into())
         .spawn(move || {
-            use rusqlite::{params, Connection, TransactionBehavior};
+            use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
             let mut conn = match Connection::open(&db_path) {
                 Ok(c) => c,
@@ -121,18 +134,26 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
                 PRAGMA busy_timeout = 5000;
                 PRAGMA foreign_keys = ON;
 
+                CREATE TABLE IF NOT EXISTS processes (
+                    id   INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                );
+
                 CREATE TABLE IF NOT EXISTS metrics (
-                    proc_name TEXT NOT NULL,
-                    ts        INTEGER NOT NULL,
-                    cpu       REAL NOT NULL,
-                    mem       INTEGER NOT NULL,
-                    PRIMARY KEY (proc_name, ts)
+                    process_id INTEGER NOT NULL,
+                    ts         INTEGER NOT NULL,
+                    cpu_x10    INTEGER NOT NULL,
+                    mem_kib    INTEGER NOT NULL,
+                    PRIMARY KEY (process_id, ts),
+                    FOREIGN KEY (process_id) REFERENCES processes(id) ON DELETE CASCADE
                 ) WITHOUT ROWID;
                 "#,
             ) {
                 eprintln!("metrics sqlite init error: {}", e);
                 return;
             }
+
+            let mut proc_cache: HashMap<String, i64> = HashMap::new();
 
             while let Some(msg) = rx.blocking_recv() {
                 match msg {
@@ -150,21 +171,72 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
                         };
 
                         {
-                            let mut stmt = match tx.prepare_cached(
-                                "INSERT OR REPLACE INTO metrics (proc_name, ts, cpu, mem) VALUES (?1, ?2, ?3, ?4)",
+                            let mut get_id_stmt = match tx.prepare_cached(
+                                "SELECT id FROM processes WHERE name = ?1"
                             ) {
                                 Ok(s) => s,
                                 Err(e) => {
-                                    eprintln!("metrics sqlite prepare error: {}", e);
+                                    eprintln!("metrics sqlite prepare get_id error: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            let mut ins_proc_stmt = match tx.prepare_cached(
+                                "INSERT OR IGNORE INTO processes(name) VALUES (?1)"
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("metrics sqlite prepare ins_proc error: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            let mut ins_metrics_stmt = match tx.prepare_cached(
+                                "INSERT OR REPLACE INTO metrics(process_id, ts, cpu_x10, mem_kib) VALUES (?1, ?2, ?3, ?4)"
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("metrics sqlite prepare ins_metrics error: {}", e);
                                     continue;
                                 }
                             };
 
                             for r in rows {
-                                if let Err(e) =
-                                    stmt.execute(params![r.proc_name, r.ts, r.cpu, r.mem])
-                                {
-                                    eprintln!("metrics sqlite insert error: {}", e);
+                                let pid = if let Some(&id) = proc_cache.get(&r.proc_name) {
+                                    id
+                                } else {
+                                    if let Err(e) = ins_proc_stmt.execute(params![&r.proc_name]) {
+                                        eprintln!("metrics sqlite insert process error: {}", e);
+                                        continue;
+                                    }
+
+                                    let id: Option<i64> = match get_id_stmt
+                                        .query_row(params![&r.proc_name], |row| row.get(0))
+                                        .optional()
+                                    {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            eprintln!("metrics sqlite select process id error: {}", e);
+                                            continue;
+                                        }
+                                    };
+
+                                    let Some(id) = id else {
+                                        eprintln!("metrics sqlite process id missing after insert: {}", r.proc_name);
+                                        continue;
+                                    };
+
+                                    proc_cache.insert(r.proc_name.clone(), id);
+                                    id
+                                };
+
+                                if let Err(e) = ins_metrics_stmt.execute(params![
+                                    pid,
+                                    r.ts,
+                                    r.cpu_x10 as i64,
+                                    r.mem_kib as i64
+                                ]) {
+                                    eprintln!("metrics sqlite insert metrics error: {}", e);
                                 }
                             }
                         }
