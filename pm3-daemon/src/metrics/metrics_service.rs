@@ -44,6 +44,8 @@ impl MetricsService {
 
         let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut tick_clean_db = tokio::time::interval(Duration::from_mins(30));
+        tick_clean_db.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut batch: Vec<MetricsRow> = Vec::with_capacity(MAX_BATCH);
 
@@ -53,6 +55,10 @@ impl MetricsService {
                     if !batch.is_empty() {
                         let _ = db_tx.send(DbMsg::Batch(std::mem::take(&mut batch))).await;
                     }
+                }
+
+                _ = tick_clean_db.tick() => {
+                    let _ = db_tx.send(DbMsg::CleanDb).await;
                 }
 
                 msg = rx.recv() => match msg {
@@ -106,6 +112,7 @@ struct MetricsRow {
 enum DbMsg {
     Batch(Vec<MetricsRow>),
     Shutdown,
+    CleanDb,
 }
 
 fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
@@ -243,6 +250,51 @@ fn spawn_db_worker(db_path: PathBuf) -> mpsc::Sender<DbMsg> {
 
                         if let Err(e) = tx.commit() {
                             eprintln!("metrics sqlite commit error: {}", e);
+                        }
+                    }
+                    DbMsg::CleanDb => {
+                        use rusqlite::params;
+                        use std::time::{SystemTime, UNIX_EPOCH};
+
+                        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                            Ok(d) => d.as_secs() as i64,
+                            Err(e) => {
+                                eprintln!("metrics sqlite time error: {e}");
+                                continue;
+                            }
+                        };
+
+                        let cutoff = now - 86_400;
+
+                        let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!("metrics sqlite begin clean tx error: {e}");
+                                continue;
+                            }
+                        };
+
+                        let deleted = match tx.execute(
+                            "DELETE FROM metrics WHERE ts < ?1",
+                            params![cutoff],
+                        ) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                eprintln!("metrics sqlite clean delete error: {e}");
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = tx.commit() {
+                            eprintln!("metrics sqlite clean commit error: {e}");
+                            continue;
+                        }
+
+                        if deleted > 0 {
+                            println!(
+                                "metrics sqlite cleanup: deleted {} rows older than {} (cutoff_ts={})",
+                                deleted, 86_400, cutoff
+                            );
                         }
                     }
                     DbMsg::Shutdown => break,
