@@ -8,3 +8,12 @@ tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "process"
 sysinfo = "0.30"
 anyhow = "1.0"
 rand = "0.8"
+os_pipe = "1.0"
+rusqlite = "0.38"
+libsqlite3-sys = { version = "*", features = ["bundled"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

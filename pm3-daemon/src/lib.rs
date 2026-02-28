@@ -1,14 +1,28 @@
 mod command_handler;
+mod logging;
+mod metrics;
 mod models;
 mod process_runner;
 mod utils;
 
 use crate::command_handler::commands::RunnerCommand;
+use crate::logging::logging_service::LoggingService;
+use crate::metrics::metrics_service::MetricsService;
 use command_handler::tcp_listener::TcpCommandHandler;
 use process_runner::runner;
 use tokio::sync::mpsc;
 
 pub async fn start_application() -> anyhow::Result<()> {
+    let logging_rx = LoggingService::init();
+    let metrics_rx = MetricsService::init();
+
+    tokio::spawn(async move {
+        LoggingService::dispatch(logging_rx).await;
+    });
+    tokio::spawn(async move {
+        MetricsService::dispatch(metrics_rx).await;
+    });
+
     let mut pm3_runner = runner::ProcessRunner::init();
 
     let (tx, mut rx) = mpsc::channel::<RunnerCommand>(5);
