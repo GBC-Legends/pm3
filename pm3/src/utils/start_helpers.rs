@@ -84,14 +84,14 @@ pub fn is_script_ext(path: &Path) -> bool {
 }
 
 pub fn to_abs_best_effort(program: &str) -> String {
-    let cwd = match std::env::current_dir() {
+    let cwd = match env::current_dir() {
         Ok(c) => c,
         Err(_) => return program.to_string(),
     };
 
     let joined = cwd.join(program);
 
-    if let Ok(p) = std::fs::canonicalize(&joined) {
+    if let Ok(p) = fs::canonicalize(&joined) {
         return p.to_string_lossy().to_string();
     }
 

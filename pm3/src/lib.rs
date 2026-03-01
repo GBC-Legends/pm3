@@ -1,9 +1,11 @@
 mod tcp_connector;
 mod utils;
+mod models;
 
 use crate::tcp_connector::ping::ping_server;
 use crate::tcp_connector::start::start_program;
 use crate::tcp_connector::stop::stop_program;
+use crate::tcp_connector::status::request_status;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
@@ -17,6 +19,9 @@ pub enum Commands {
     Ping,
     Start(StartArgs),
     Stop(StopArgs),
+    Status,
+    List,
+    Ls,
 }
 
 #[derive(Args, Debug)]
@@ -51,6 +56,12 @@ pub fn process_commands(cmd: Commands) {
             match stop_program(args.programs) {
                 Ok(response) => println!("{}", response),
                 Err(err) => println!("Error: {}", err),
+            }
+        }
+        Commands::Status | Commands::List | Commands::Ls => {
+            match request_status() {
+                Ok(_) => {}
+                Err(err) => eprintln!("pm3: {}", err),
             }
         }
     };
