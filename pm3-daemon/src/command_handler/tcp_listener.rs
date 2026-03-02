@@ -1,6 +1,9 @@
+use std::sync::OnceLock;
+
 use crate::command_handler::commands::RunnerCommand;
 use crate::daemon_config::DaemonConfig;
 use crate::utils::config_validator::verify_start_config;
+use crate::utils::encryption::decrypt_wire_line;
 use crate::utils::encryption::encrypt_reply_to_token;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -12,6 +15,8 @@ pub(crate) struct TcpCommandHandler {
     cfg: DaemonConfig,
 }
 
+static CFG: OnceLock<DaemonConfig> = OnceLock::new();
+
 impl TcpCommandHandler {
     pub(crate) async fn new(
         config: &DaemonConfig,
@@ -20,6 +25,10 @@ impl TcpCommandHandler {
         let addr = format!("127.0.0.1:{}", config.port);
         let listener = TcpListener::bind(&addr).await?;
         println!("Listening on {}", &addr);
+
+        CFG.set(config.clone())
+            .expect("TcpCommandHandler initialized twice");
+
         Ok(Self {
             listener,
             tx,
@@ -78,10 +87,19 @@ impl TcpCommandHandler {
         Ok(())
     }
 
-    fn break_command(cmd: &str) -> (String, Vec<&str>) {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        let command = parts[0].to_lowercase();
-        let args = parts[1..].to_vec();
+    fn break_command(cmd: &str) -> (String, Vec<String>) {
+        let key = CFG.get().expect("TcpCommandHandler not initialized").key();
+        let aad: &'static [u8] = b"pm3:tcp:v1";
+
+        let decrypted_cmd = decrypt_wire_line(&key, &cmd, aad).unwrap_or_default();
+
+        let cmd = String::from_utf8_lossy(&decrypted_cmd).into_owned();
+
+        let mut parts = cmd.split_whitespace();
+
+        let command = parts.next().unwrap_or("").to_lowercase();
+        let args = parts.map(|s| s.to_string()).collect::<Vec<String>>();
+
         (command, args)
     }
 
