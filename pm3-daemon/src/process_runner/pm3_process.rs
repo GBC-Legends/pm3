@@ -1,13 +1,13 @@
+use crate::logging::logging_service::LoggingService;
 use crate::utils::bytes_safe_formatting::format_bytes;
 use crate::utils::get_process_users::username_for_pid;
 use crate::utils::pm3_safe_dir;
 use crate::{models::pm3_config::PmProcessConfig, utils::pm3_safe_cfg_handler};
 use std::path::PathBuf;
 use std::sync::Arc;
-use sysinfo::{Pid, System, Users};
+use sysinfo::{Pid, System};
 use tokio::sync::Mutex;
 
-use std::{fs::File, process::Stdio};
 use tokio::process::{Child, Command};
 
 #[derive(Debug)]
@@ -168,27 +168,14 @@ impl PmProcess {
             )));
         }
 
-        let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
-
-        let logs_dir = pm3_home_dir.join("processes").join(&cfg.proc_name);
-        println!("Logs directory: {}", logs_dir.display());
-
-        match tokio::fs::create_dir_all(&logs_dir).await {
-            Ok(_) => println!("Directory created successfully"),
-            Err(_) => {}
-        }
-
-        let stdout_path = logs_dir.join("stdout.log");
-        let stderr_path = logs_dir.join("stderr.log");
-
-        let stdout = File::create(&stdout_path)?;
-        let stderr = File::create(&stderr_path)?;
+        let (stdout, stderr) = LoggingService::get_logging_pair(&cfg.proc_name);
 
         let child = Command::new(&filename_abs)
             .current_dir(&cfg.exec_dir)
             .args(&cfg.exec_args)
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
+            .env("PYTHONUNBUFFERED", "1")
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()?;
 
         {
