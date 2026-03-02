@@ -1,5 +1,7 @@
 use crate::command_handler::commands::RunnerCommand;
+use crate::daemon_config::DaemonConfig;
 use crate::utils::config_validator::verify_start_config;
+use crate::utils::encryption::encrypt_reply_to_token;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -7,27 +9,38 @@ use tokio::sync::{mpsc, oneshot};
 pub(crate) struct TcpCommandHandler {
     listener: TcpListener,
     tx: mpsc::Sender<RunnerCommand>,
+    cfg: DaemonConfig,
 }
 
 impl TcpCommandHandler {
     pub(crate) async fn new(
-        address: &str,
+        config: &DaemonConfig,
         tx: mpsc::Sender<RunnerCommand>,
     ) -> anyhow::Result<Self> {
-        let listener = TcpListener::bind(address).await?;
-        println!("Listening on {}", address);
-        Ok(Self { listener, tx })
+        let addr = format!("127.0.0.1:{}", config.port);
+        let listener = TcpListener::bind(&addr).await?;
+        println!("Listening on {}", &addr);
+        Ok(Self {
+            listener,
+            tx,
+            cfg: config.clone(),
+        })
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
+        let key = self.cfg.key();
+        let aad: &'static [u8] = b"pm3:tcp:v1";
+
         loop {
             let (stream, addr) = self.listener.accept().await?;
             println!("New client: {addr}");
 
             let tx = self.tx.clone();
+            let key = key;
+            let aad = aad;
 
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_client(stream, tx).await {
+                if let Err(e) = Self::handle_client(stream, tx, &key, aad).await {
                     eprintln!("Client {addr} error: {e:?}");
                 }
             });
@@ -37,6 +50,8 @@ impl TcpCommandHandler {
     async fn handle_client(
         stream: TcpStream,
         tx: mpsc::Sender<RunnerCommand>,
+        key: &[u8; 32],
+        aad: &[u8],
     ) -> anyhow::Result<()> {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
@@ -50,12 +65,14 @@ impl TcpCommandHandler {
             }
 
             let cmd = line.trim();
-            let reply = match Self::process_command(cmd, &tx).await {
+            let reply_plain = match Self::process_command(cmd, &tx).await {
                 Ok(msg) => format!("OK {msg}\n"),
                 Err(e) => format!("ERR {e}\n"),
             };
 
-            write_half.write_all(reply.as_bytes()).await?;
+            let token = encrypt_reply_to_token(key, reply_plain.as_bytes(), aad);
+            let out_line = format!("ENC {token}\n");
+            write_half.write_all(out_line.as_bytes()).await?;
         }
 
         Ok(())
@@ -96,7 +113,6 @@ impl TcpCommandHandler {
                 Ok(reply_rx.await??)
             }
             "stop" => {
-                println!("{args:?}");
                 let (reply_tx, reply_rx) = oneshot::channel();
                 tx.send(RunnerCommand::Stop {
                     stop_programs: args
