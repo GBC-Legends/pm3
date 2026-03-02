@@ -1,4 +1,6 @@
 use crate::logging::logging_service::LoggingService;
+use crate::metrics::metrics_service::MetricsLog;
+use crate::metrics::metrics_service::MetricsService;
 use crate::utils::bytes_safe_formatting::format_bytes;
 use crate::utils::get_process_users::username_for_pid;
 use crate::utils::pm3_safe_dir;
@@ -326,6 +328,18 @@ impl PmProcess {
         if let Some(proc_) = sys.process(pid) {
             let mem_mb = proc_.memory() as f64;
             let cpu = proc_.cpu_usage();
+
+            let metrics_log = MetricsLog {
+                proc_name: self.proc_name.as_ref().to_string(),
+                cpu_usage: cpu,
+                memory_usage: mem_mb as u64,
+            };
+
+            match MetricsService::get_metrics_handle().send(metrics_log).await {
+                Ok(_) => (),
+                Err(e) => eprintln!("Failed to send metrics log: {e}"),
+            };
+
             println!(
                 "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
                 cpu,
