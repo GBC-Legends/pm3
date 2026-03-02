@@ -1,4 +1,5 @@
 mod command_handler;
+mod daemon_config;
 mod logging;
 mod metrics;
 mod models;
@@ -13,6 +14,8 @@ use process_runner::runner;
 use tokio::sync::mpsc;
 
 pub async fn start_application() -> anyhow::Result<()> {
+    let pm3_cfg = daemon_config::DaemonConfig::new()?;
+
     let logging_rx = LoggingService::init();
     let metrics_rx = MetricsService::init();
 
@@ -36,7 +39,7 @@ pub async fn start_application() -> anyhow::Result<()> {
         pm3_runner.dispatch(&mut rx).await;
     });
 
-    let tcp = TcpCommandHandler::new("127.0.0.1:8046", tx).await?;
+    let tcp = TcpCommandHandler::new(&pm3_cfg, tx).await?;
     tcp.run().await?;
 
     Ok(())
