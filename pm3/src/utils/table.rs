@@ -171,6 +171,6 @@ pub fn print_process_table(processes: &[PmProcessStatusInfo]) {
             .with(Alignment::center()),
     );
 
-    println!("\nProcess status:\n");
+    println!("\nProcess status:");
     println!("{table}");
 }

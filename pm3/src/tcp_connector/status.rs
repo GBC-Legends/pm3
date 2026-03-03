@@ -1,67 +1,31 @@
 use crate::models::process::{PmProcessStatusInfo, ProcessStatus};
-use crate::tcp_connector::init_stream;
 use crate::utils::table::print_process_table;
 
-use std::io::{BufRead, BufReader, Result, Write};
+use std::io::Result;
 
 pub fn request_status() -> Result<()> {
-    let stream = init_stream()?;
+    let reply = crate::tcp_connector::send_secure_command("list")?;
 
-    let mut reader = BufReader::with_capacity(64 * 1024, stream);
+    let mut lines = reply.lines();
 
-    reader.get_mut().write_all(b"LIST\r\n")?;
-
+    let first = lines.next().unwrap_or("");
     let mut count = 0usize;
 
-    read_frame_line(&mut reader, |line| {
-        if !line.starts_with(b"OK ") {
-            return;
-        }
-        count = atoi(&line[3..]) as usize;
-    })?;
+    if first.starts_with("OK ") {
+        count = first[3..].trim().parse().unwrap_or(0);
+    }
 
     let mut processes = Vec::with_capacity(count);
 
-    for _ in 0..count {
-        read_frame_line(&mut reader, |line| {
-            if let Some(p) = parse_process(line) {
-                processes.push(p);
-            }
-        })?;
+    for line in lines {
+        if let Some(p) = parse_process(line.as_bytes()) {
+            processes.push(p);
+        }
     }
 
     print_process_table(&processes);
 
     Ok(())
-}
-
-fn read_frame_line<R, F>(reader: &mut R, mut f: F) -> Result<()>
-where
-    R: BufRead,
-    F: FnMut(&[u8]),
-{
-    loop {
-        let buf = reader.fill_buf()?;
-
-        if buf.is_empty() {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-
-        if let Some(pos) = memchr::memchr(b'\n', buf) {
-            let mut line = &buf[..pos];
-
-            if line.ends_with(b"\r") {
-                line = &line[..line.len() - 1];
-            }
-
-            f(line);
-            reader.consume(pos + 1);
-            return Ok(());
-        }
-
-        let len = buf.len();
-        reader.consume(len);
-    }
 }
 
 fn parse_process(line: &[u8]) -> Option<PmProcessStatusInfo> {

@@ -1,18 +1,7 @@
-use std::io::{BufRead, BufReader, Result, Write};
+use std::io::Result;
 
-pub fn stop_program(
-    programs: Vec<String>,
-) -> Result<String> {
-    let msg = format!("stop {}\n", programs.join(" "));
-
-    let mut stream = crate::tcp_connector::init_stream()?;
-    stream.write_all(msg.as_bytes())?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    println!("resp={response}");
-
-    Ok(response)
+pub fn stop_program(programs: Vec<String>) -> Result<String> {
+    let plaintext = format!("stop {}", programs.join(" "));
+    let reply = crate::tcp_connector::send_secure_command(&plaintext)?;
+    Ok(reply)
 }
