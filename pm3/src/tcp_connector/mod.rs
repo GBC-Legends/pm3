@@ -7,10 +7,13 @@ use std::io::{ErrorKind, Result};
 use std::net::TcpStream;
 use std::time::Duration;
 
-pub fn init_stream() -> Result<TcpStream> {
-    let address = "127.0.0.1:8046";
+use crate::utils::config::Config;
 
-    let stream = match TcpStream::connect(address) {
+pub fn init_stream() -> Result<TcpStream> {
+    let config = Config::load();
+    let address = format!("127.0.0.1:{}", config.port);
+
+    let stream = match TcpStream::connect(&address) {
         Ok(s) => s,
         Err(e) => {
             match e.kind() {
