@@ -4,6 +4,7 @@ pub mod status;
 pub mod stop;
 
 use crate::utils::config::Config;
+use crate::utils::encryption::DecryptError;
 use crate::utils::encryption::{decrypt_wire_line, encrypt_reply_to_token};
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result, Write};
 use std::net::TcpStream;
@@ -51,9 +52,23 @@ pub fn send_secure_command(cmd: &str) -> Result<String> {
         Ok(_) => {
             let decrypted = match decrypt_wire_line(&key, &response, AAD) {
                 Ok(d) => d,
-                Err(_) => {
-                    eprintln!("pm3: failed to decrypt daemon response");
-                    return Err(Error::new(ErrorKind::Other, "decryption failed"));
+                Err(e) => {
+                    match e {
+                        DecryptError::BadBase64(e) => {
+                            eprintln!("pm3: daemon response is not valid base64: {}", e);
+                        }
+                        DecryptError::TooShort => {
+                            eprintln!("pm3: daemon response is too short");
+                        }
+                        DecryptError::BadVersion(v) => {
+                            eprintln!("pm3: unsupported encryption version: {}", v);
+                        }
+                        DecryptError::Crypto => {
+                            eprintln!("pm3: failed to authenticate daemon response");
+                        }
+                    }
+
+                    return Err(Error::new(ErrorKind::InvalidData, "decryption failed"));
                 }
             };
 
