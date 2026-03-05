@@ -1,3 +1,4 @@
+use crate::command_handler::commands::LogChunk;
 use crate::command_handler::commands::RunnerCommand;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
@@ -190,6 +191,30 @@ impl ProcessRunner {
                 }
 
                 let _ = reply.send(Ok(out));
+                Ok(())
+            }
+            RunnerCommand::Logs { stream } => {
+                tokio::spawn(async move {
+                    let mut cnt = 0;
+
+                    loop {
+                        cnt += 1;
+                        if stream
+                            .send(Ok(LogChunk::Line("Привет как дела".to_string())))
+                            .is_err()
+                        {
+                            break;
+                        }
+
+                        if cnt % 10 == 0 {
+                            stream.send(Ok(LogChunk::Eof)).unwrap();
+                            break;
+                        }
+
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                });
+
                 Ok(())
             }
         }
