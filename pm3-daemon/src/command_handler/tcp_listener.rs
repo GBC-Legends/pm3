@@ -153,7 +153,7 @@ impl TcpCommandHandler {
         let key = CFG.get().expect("TcpCommandHandler not initialized").key();
         let aad: &'static [u8] = b"pm3:tcp:v1";
 
-        let decrypted_cmd = decrypt_wire_line(&key, &cmd, aad).unwrap_or_default();
+        let decrypted_cmd = decrypt_wire_line(&key, &cmd, aad).unwrap_or(cmd.as_bytes().to_vec());
 
         let cmd = String::from_utf8_lossy(&decrypted_cmd).into_owned();
 
