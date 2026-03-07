@@ -2,10 +2,12 @@ mod models;
 mod tcp_connector;
 mod utils;
 
+use crate::tcp_connector::logs::request_logs;
 use crate::tcp_connector::ping::ping_server;
 use crate::tcp_connector::start::start_program;
 use crate::tcp_connector::status::request_status;
 use crate::tcp_connector::stop::stop_program;
+
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
@@ -22,6 +24,7 @@ pub enum Commands {
     Status,
     List,
     Ls,
+    Logs(LogsArgs),
     // Monit,
     // Monitor,
 }
@@ -42,6 +45,13 @@ pub struct StopArgs {
     programs: Vec<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct LogsArgs {
+    #[arg(long)]
+    pub lines: u64,
+    pub programs: Vec<String>,
+}
+
 pub fn process_commands(cmd: Commands) {
     match cmd {
         Commands::Ping => match ping_server() {
@@ -59,6 +69,10 @@ pub fn process_commands(cmd: Commands) {
             Err(err) => println!("Error: {}", err),
         },
         Commands::Status | Commands::List | Commands::Ls => match request_status() {
+            Ok(_) => {}
+            Err(err) => eprintln!("pm3: {}", err),
+        },
+        Commands::Logs(args) => match request_logs(args.lines, args.programs) {
             Ok(_) => {}
             Err(err) => eprintln!("pm3: {}", err),
         },

@@ -1,8 +1,9 @@
+pub mod logs;
+pub mod monitor;
 pub mod ping;
 pub mod start;
 pub mod status;
 pub mod stop;
-pub mod monitor;
 
 use crate::utils::config::Config;
 use crate::utils::encryption::DecryptError;

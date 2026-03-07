@@ -193,7 +193,20 @@ impl ProcessRunner {
                 let _ = reply.send(Ok(out));
                 Ok(())
             }
-            RunnerCommand::Logs { stream } => {
+            RunnerCommand::ListPrograms { reply } => {
+                let mut out = Vec::new();
+                for process in &self.processes {
+                    let p_handle = process.clone();
+                    out.push(p_handle.idx.to_string());
+                }
+                let _ = reply.send(Ok(out.join(" ")));
+                Ok(())
+            }
+            RunnerCommand::Logs {
+                stream,
+                lines,
+                programs,
+            } => {
                 tokio::spawn(async move {
                     let mut cnt = 0;
 
