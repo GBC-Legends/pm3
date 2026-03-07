@@ -1,11 +1,11 @@
+mod models;
 mod tcp_connector;
 mod utils;
-mod models;
 
 use crate::tcp_connector::ping::ping_server;
 use crate::tcp_connector::start::start_program;
-use crate::tcp_connector::stop::stop_program;
 use crate::tcp_connector::status::request_status;
+use crate::tcp_connector::stop::stop_program;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
@@ -22,6 +22,8 @@ pub enum Commands {
     Status,
     List,
     Ls,
+    // Monit,
+    // Monitor,
 }
 
 #[derive(Args, Debug)]
@@ -37,7 +39,7 @@ pub struct StartArgs {
 
 #[derive(Args, Debug)]
 pub struct StopArgs {
-    programs: Vec<String>
+    programs: Vec<String>,
 }
 
 pub fn process_commands(cmd: Commands) {
@@ -51,18 +53,14 @@ pub fn process_commands(cmd: Commands) {
                 Ok(response) => println!("{}", response),
                 Err(err) => println!("Error: {}", err),
             }
+        }
+        Commands::Stop(args) => match stop_program(args.programs) {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("Error: {}", err),
         },
-        Commands::Stop(args) => {
-            match stop_program(args.programs) {
-                Ok(response) => println!("{}", response),
-                Err(err) => println!("Error: {}", err),
-            }
-        }
-        Commands::Status | Commands::List | Commands::Ls => {
-            match request_status() {
-                Ok(_) => {}
-                Err(err) => eprintln!("pm3: {}", err),
-            }
-        }
+        Commands::Status | Commands::List | Commands::Ls => match request_status() {
+            Ok(_) => {}
+            Err(err) => eprintln!("pm3: {}", err),
+        },
     };
 }
