@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::command_handler::commands::{CmdReply, LogChunk, RunnerCommand};
+use crate::command_handler::commands::{CmdReply, RunnerCommand};
 use crate::daemon_config::DaemonConfig;
 use crate::utils::config_validator::verify_start_config;
 use crate::utils::encryption::decrypt_wire_line;
@@ -84,60 +84,38 @@ impl TcpCommandHandler {
                         .await?;
                 }
 
-                // Ok(CmdReply::Stream(mut rx)) => {
-                //     let head = "OK LOGS\n";
-                //     let token = encrypt_reply_to_token(key, head.as_bytes(), aad);
-                //     write_half
-                //         .write_all(format!("ENC {token}\n").as_bytes())
-                //         .await?;
-
-                //     while let Some(item) = rx.recv().await {
-                //         let line = match item {
-                //             Ok(s) => format!("LOG {s:?}\n"),
-                //             Err(e) => format!("ERR {e}\n"),
-                //         };
-
-                //         let token = encrypt_reply_to_token(key, line.as_bytes(), aad);
-                //         if write_half
-                //             .write_all(format!("ENC {token}\n").as_bytes())
-                //             .await
-                //             .is_err()
-                //         {
-                //             break;
-                //         }
-                //     }
-
-                //     let eof = "OK EOF\n";
-                //     let token = encrypt_reply_to_token(key, eof.as_bytes(), aad);
-                //     let _ = write_half
-                //         .write_all(format!("ENC {token}\n").as_bytes())
-                //         .await;
-                // }
                 Ok(CmdReply::Stream(mut rx)) => {
                     let head = "OK LOGS\n";
-                    write_half.write_all(head.as_bytes()).await?;
+                    let token = encrypt_reply_to_token(key, head.as_bytes(), aad);
+                    write_half
+                        .write_all(format!("ENC {token}\n").as_bytes())
+                        .await?;
 
                     while let Some(item) = rx.recv().await {
                         let line = match item {
-                            Ok(s) => match s {
-                                LogChunk::Line(s) => format!("LOG {s:?}\n"),
-                                LogChunk::Eof => "OK EOF\n".to_string(),
-                            },
+                            Ok(s) => format!("LOG {s:?}\n"),
                             Err(e) => format!("ERR {e}\n"),
                         };
 
-                        if write_half.write_all(line.as_bytes()).await.is_err() {
+                        let token = encrypt_reply_to_token(key, line.as_bytes(), aad);
+                        if write_half
+                            .write_all(format!("ENC {token}\n").as_bytes())
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
 
                     let eof = "OK EOF\n";
-                    let _ = write_half.write_all(eof.as_bytes()).await;
+                    let token = encrypt_reply_to_token(key, eof.as_bytes(), aad);
+                    let _ = write_half
+                        .write_all(format!("ENC {token}\n").as_bytes())
+                        .await;
                 }
 
                 Err(e) => {
                     let reply_plain = format!("ERR {e}\n");
-                    println!("{reply_plain}");
                     let token = encrypt_reply_to_token(key, reply_plain.as_bytes(), aad);
                     write_half
                         .write_all(format!("ENC {token}\n").as_bytes())
@@ -153,7 +131,8 @@ impl TcpCommandHandler {
         let key = CFG.get().expect("TcpCommandHandler not initialized").key();
         let aad: &'static [u8] = b"pm3:tcp:v1";
 
-        let decrypted_cmd = decrypt_wire_line(&key, &cmd, aad).unwrap_or_default();
+        let decrypted_cmd =
+            decrypt_wire_line(&key, &cmd, aad).unwrap_or("not_encrypted".as_bytes().to_vec());
 
         let cmd = String::from_utf8_lossy(&decrypted_cmd).into_owned();
 
@@ -170,6 +149,7 @@ impl TcpCommandHandler {
         tx: &mpsc::Sender<RunnerCommand>,
     ) -> anyhow::Result<CmdReply> {
         let (command, args) = Self::break_command(cmd);
+        println!("{command}, {args:?}");
 
         match command.as_str() {
             "ping" => {
@@ -209,9 +189,38 @@ impl TcpCommandHandler {
                 tx.send(RunnerCommand::List { reply: reply_tx }).await?;
                 Ok(CmdReply::One(reply_rx.await??))
             }
+            "list-programs" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::ListPrograms { reply: reply_tx })
+                    .await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
+
             "logs" => {
+                let mut lines = 100;
+                let mut programs = Vec::new();
+
+                for arg in args {
+                    if let Some(v) = arg.strip_prefix("--lines=") {
+                        if let Ok(n) = v.parse::<u64>() {
+                            lines = n;
+                        }
+                    } else {
+                        programs.push(arg);
+                    }
+                }
+
                 let (reply_tx, reply_rx) = mpsc::unbounded_channel();
-                tx.send(RunnerCommand::Logs { stream: reply_tx }).await?;
+
+                tx.send(RunnerCommand::Logs {
+                    stream: reply_tx,
+                    lines: lines,
+                    programs: programs
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                })
+                .await?;
                 Ok(CmdReply::Stream(reply_rx))
             }
 
