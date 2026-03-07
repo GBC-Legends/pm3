@@ -41,7 +41,12 @@ pub enum RunnerCommand {
     List {
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
+    ListPrograms {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
     Logs {
+        lines: u64,
+        programs: Vec<String>,
         stream: mpsc::UnboundedSender<anyhow::Result<LogChunk>>,
     },
 }
