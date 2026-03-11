@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 pub async fn start_application() -> anyhow::Result<()> {
     let pm3_cfg = daemon_config::DaemonConfig::new()?;
 
-    let logging_rx = LoggingService::init();
+    let (logging_rx, logging_subs_tx) = LoggingService::init();
     let metrics_rx = MetricsService::init();
 
     tokio::spawn(async move {
@@ -26,7 +26,7 @@ pub async fn start_application() -> anyhow::Result<()> {
         MetricsService::dispatch(metrics_rx).await;
     });
 
-    let mut pm3_runner = runner::ProcessRunner::init();
+    let mut pm3_runner = runner::ProcessRunner::init(logging_subs_tx);
 
     let (tx, mut rx) = mpsc::channel::<RunnerCommand>(5);
 

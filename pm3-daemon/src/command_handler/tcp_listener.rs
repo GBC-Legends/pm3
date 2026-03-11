@@ -93,7 +93,7 @@ impl TcpCommandHandler {
 
                     while let Some(item) = rx.recv().await {
                         let line = match item {
-                            Ok(s) => format!("LOG {s:?}\n"),
+                            Ok(s) => format!("LOG {s}\n"),
                             Err(e) => format!("ERR {e}\n"),
                         };
 

@@ -7,15 +7,20 @@ use std::time::Duration;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 
 use crate::logging::logging_instance::{LogMsg, LoggingInstance, StreamKind};
+use crate::logging::logging_subscription::{LoggingSubscription, LoggingSubscriptionAction};
 use crate::utils::pm3_safe_dir;
 
 pub struct LoggingService;
 
 static GLOBAL_TX: OnceLock<mpsc::UnboundedSender<LogMsg>> = OnceLock::new();
 static PATH_MAP: OnceLock<Mutex<HashMap<String, (PathBuf, PathBuf)>>> = OnceLock::new();
+static LOGS_SUBSCRIPTIONS: OnceLock<TokioMutex<Vec<LoggingSubscription>>> = OnceLock::new();
+static LOGS_SUBSCRIPTIONS_RX: OnceLock<TokioMutex<mpsc::Receiver<LoggingSubscriptionAction>>> =
+    OnceLock::new();
 
 const MAX_BUF_PER_PROC: usize = 8 * 1024 * 1024; // 8MB
 const FLUSH_SECS: u64 = 15;
@@ -26,16 +31,22 @@ type BufCache = HashMap<String, (Vec<u8>, Vec<u8>)>;
 type Activity15s = HashMap<String, (u64, u64)>;
 
 impl LoggingService {
-    pub fn init() -> mpsc::UnboundedReceiver<LogMsg> {
+    pub fn init() -> (
+        mpsc::UnboundedReceiver<LogMsg>,
+        mpsc::Sender<LoggingSubscriptionAction>,
+    ) {
         if GLOBAL_TX.get().is_some() {
             panic!("LoggingService::init() called more than once");
         }
 
         let (tx, rx) = mpsc::unbounded_channel::<LogMsg>();
+        let (logs_tx, logs_rx) = mpsc::channel::<LoggingSubscriptionAction>(2);
         let _ = GLOBAL_TX.set(tx);
         let _ = PATH_MAP.set(Mutex::new(HashMap::new()));
+        let _ = LOGS_SUBSCRIPTIONS.set(TokioMutex::new(Vec::new()));
+        let _ = LOGS_SUBSCRIPTIONS_RX.set(TokioMutex::new(logs_rx));
 
-        rx
+        (rx, logs_tx)
     }
 
     fn shrink_buf(buf: &mut Vec<u8>) {
@@ -219,6 +230,8 @@ impl LoggingService {
         let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        let mut subs_channel_listener = LOGS_SUBSCRIPTIONS_RX.get().unwrap().lock().await;
+
         let mut bytes_last_15s: u64 = 0;
 
         let mut file_cache: FileCache = HashMap::new();
@@ -257,6 +270,16 @@ impl LoggingService {
                             Self::flush_all(&mut buf_cache, &mut file_cache).await;
                             break;
                         }
+                    }
+                }
+                sub = subs_channel_listener.recv() => {
+                    let Some(sub) = sub else {
+                        break;
+                    };
+
+                    match sub {
+                        LoggingSubscriptionAction::Subscribe { id, tx, programs, lines } => {}
+                        LoggingSubscriptionAction::Unsubscribe { .. } => {}
                     }
                 }
 
