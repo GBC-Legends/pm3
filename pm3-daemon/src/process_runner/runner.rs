@@ -1,5 +1,7 @@
 use crate::command_handler::commands::LogChunk;
 use crate::command_handler::commands::RunnerCommand;
+use crate::logging::logging_subscription::LoggingSubscription;
+use crate::logging::logging_subscription::LoggingSubscriptionAction;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
 use anyhow::Result;
@@ -10,12 +12,14 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
 pub struct ProcessRunner {
+    pub subs_sender: mpsc::Sender<LoggingSubscriptionAction>,
     pub processes: Vec<Arc<PmProcess>>,
 }
 
 impl ProcessRunner {
-    pub fn init() -> Self {
+    pub fn init(subs_sender: mpsc::Sender<LoggingSubscriptionAction>) -> Self {
         let mut slf = ProcessRunner {
+            subs_sender,
             processes: Vec::new(),
         };
         use crate::utils::pm3_safe_cfg_handler;
@@ -207,25 +211,34 @@ impl ProcessRunner {
                 lines,
                 programs,
             } => {
+                let shared_sender = self.subs_sender.clone();
                 tokio::spawn(async move {
-                    let mut cnt = 0;
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+
+                    let subscription = LoggingSubscriptionAction::Subscribe {
+                        id: String::new(),
+                        tx,
+                        programs,
+                        lines,
+                    };
+
+                    if shared_sender.send(subscription).await.is_err() {
+                        stream.send(Ok(LogChunk::Eof)).ok();
+                        return;
+                    }
 
                     loop {
-                        cnt += 1;
-                        if stream
-                            .send(Ok(LogChunk::Line("Привет как дела".to_string())))
-                            .is_err()
-                        {
-                            break;
+                        match rx.recv().await {
+                            Some(chunk) => {
+                                println!("{chunk:?}");
+                            }
+                            None => {
+                                break;
+                            }
                         }
-
-                        if cnt % 10 == 0 {
-                            stream.send(Ok(LogChunk::Eof)).unwrap();
-                            break;
-                        }
-
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
+
+                    stream.send(Ok(LogChunk::Eof)).ok();
                 });
 
                 Ok(())

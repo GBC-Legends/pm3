@@ -1,10 +1,10 @@
-use std::sync::OnceLock;
-
 use crate::command_handler::commands::{CmdReply, RunnerCommand};
 use crate::daemon_config::DaemonConfig;
 use crate::utils::config_validator::verify_start_config;
+use crate::utils::encryption::DecryptError;
 use crate::utils::encryption::decrypt_wire_line;
 use crate::utils::encryption::encrypt_reply_to_token;
+use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -93,7 +93,7 @@ impl TcpCommandHandler {
 
                     while let Some(item) = rx.recv().await {
                         let line = match item {
-                            Ok(s) => format!("LOG {s:?}\n"),
+                            Ok(s) => format!("LOG {s}\n"),
                             Err(e) => format!("ERR {e}\n"),
                         };
 
@@ -131,8 +131,25 @@ impl TcpCommandHandler {
         let key = CFG.get().expect("TcpCommandHandler not initialized").key();
         let aad: &'static [u8] = b"pm3:tcp:v1";
 
-        let decrypted_cmd =
-            decrypt_wire_line(&key, &cmd, aad).unwrap_or("not_encrypted".as_bytes().to_vec());
+        let decrypted_cmd = match decrypt_wire_line(&key, &cmd, aad) {
+            Ok(cmd) => cmd,
+            Err(DecryptError::BadBase64(err)) => {
+                eprintln!("decrypt error: bad base64: {err}");
+                b"not_encrypted".to_vec()
+            }
+            Err(DecryptError::TooShort) => {
+                eprintln!("decrypt error: payload too short");
+                b"not_encrypted".to_vec()
+            }
+            Err(DecryptError::BadVersion(version)) => {
+                eprintln!("decrypt error: bad version: {version}");
+                b"not_encrypted".to_vec()
+            }
+            Err(DecryptError::Crypto) => {
+                eprintln!("decrypt error: crypto failure");
+                b"not_encrypted".to_vec()
+            }
+        };
 
         let cmd = String::from_utf8_lossy(&decrypted_cmd).into_owned();
 
@@ -197,7 +214,7 @@ impl TcpCommandHandler {
             }
 
             "logs" => {
-                let mut lines = 100;
+                let mut lines = 25;
                 let mut programs = Vec::new();
 
                 for arg in args {
