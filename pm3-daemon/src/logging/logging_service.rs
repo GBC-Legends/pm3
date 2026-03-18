@@ -83,10 +83,7 @@ impl LoggingService {
 
         return match map.get(&idx) {
             Some(meta) => Some((meta.stdout_path.clone(), meta.stderr_path.clone())),
-            None => {
-                eprintln!("impossible state");
-                None
-            }
+            None => None,
         };
     }
 
@@ -366,11 +363,9 @@ impl LoggingService {
                                     Err(_) => continue,
                                 };
 
-                                if !IDX_TO_META.get().expect("IDX_TO_META not initialized").lock().expect("IDX_TO_META poisoned").contains_key(&idx) {
+                                let Some((stdout_path, stderr_path)) = Self::ensure_paths(idx) else {
                                     continue;
-                                }
-
-                                let (stdout_path, stderr_path) = LoggingService::ensure_paths(idx).expect("Failed because logging_service had impossible state!");
+                                };
 
                                 let mut out_lines = Self::read_last_lines(&stdout_path, lines as usize).await;
                                 let mut err_lines = Self::read_last_lines(&stderr_path, lines as usize).await;

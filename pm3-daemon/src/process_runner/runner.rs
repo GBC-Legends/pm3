@@ -230,7 +230,7 @@ impl ProcessRunner {
                         match rx.recv().await {
                             Some(chunk) => match chunk {
                                 LogChunk::Line(line) => {
-                                    println!("{line:?}tx");
+                                    println!("new chunk: {line:?}");
                                     stream.send(Ok(LogChunk::Line(line))).ok();
                                 }
                                 LogChunk::Eof => {
