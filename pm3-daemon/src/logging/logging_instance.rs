@@ -12,7 +12,7 @@ pub enum StreamKind {
 
 #[derive(Debug)]
 pub struct LogMsg {
-    pub proc_name: String,
+    pub idx: u64,
     pub stream: StreamKind,
     pub bytes: Vec<u8>,
 }
@@ -25,12 +25,13 @@ pub struct LoggingInstance {
 impl LoggingInstance {
     pub fn new(
         proc_name: String,
+        idx: u64,
         stream: StreamKind,
         tx: mpsc::UnboundedSender<LogMsg>,
         handle: Handle,
     ) -> Self {
         let (reader, writer) = pipe().expect("pipe failed");
-        let task = Self::spawn_reader(reader, proc_name, stream, tx, handle);
+        let task = Self::spawn_reader(reader, proc_name, idx, stream, tx, handle);
 
         Self {
             writer: Some(writer),
@@ -41,6 +42,7 @@ impl LoggingInstance {
     fn spawn_reader(
         reader: PipeReader,
         proc_name: String,
+        idx: u64,
         stream: StreamKind,
         tx: mpsc::UnboundedSender<LogMsg>,
         handle: Handle,
@@ -55,7 +57,7 @@ impl LoggingInstance {
                     Ok(n) => {
                         if tx
                             .send(LogMsg {
-                                proc_name: proc_name.clone(),
+                                idx: idx,
                                 stream,
                                 bytes: buf[..n].to_vec(),
                             })
