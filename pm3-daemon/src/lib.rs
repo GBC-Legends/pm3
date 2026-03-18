@@ -16,11 +16,11 @@ use tokio::sync::mpsc;
 pub async fn start_application() -> anyhow::Result<()> {
     let pm3_cfg = daemon_config::DaemonConfig::new()?;
 
-    let (logging_rx, logging_subs_tx) = LoggingService::init();
+    let (logging_rx, logging_subs_tx, logging_subs_rx) = LoggingService::init();
     let metrics_rx = MetricsService::init();
 
     tokio::spawn(async move {
-        LoggingService::dispatch(logging_rx).await;
+        LoggingService::dispatch(logging_rx, logging_subs_rx).await;
     });
     tokio::spawn(async move {
         MetricsService::dispatch(metrics_rx).await;

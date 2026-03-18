@@ -1,6 +1,5 @@
-use crate::command_handler::commands::LogChunk;
 use crate::command_handler::commands::RunnerCommand;
-use crate::logging::logging_subscription::LoggingSubscription;
+use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
@@ -229,9 +228,15 @@ impl ProcessRunner {
 
                     loop {
                         match rx.recv().await {
-                            Some(chunk) => {
-                                println!("{chunk:?}");
-                            }
+                            Some(chunk) => match chunk {
+                                LogChunk::Line(line) => {
+                                    println!("{line:?}tx");
+                                    stream.send(Ok(LogChunk::Line(line))).ok();
+                                }
+                                LogChunk::Eof => {
+                                    break;
+                                }
+                            },
                             None => {
                                 break;
                             }

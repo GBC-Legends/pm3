@@ -4,28 +4,29 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 
-use crate::logging::logging_instance::{LogMsg, LoggingInstance, StreamKind};
+use crate::logging::logging_instance::{LogMsg, LoggingInstance};
 use crate::logging::logging_subscription::{LoggingSubscription, LoggingSubscriptionAction};
+use crate::logging::{LogChunk, ProcLogMeta, StreamKind};
 use crate::utils::pm3_safe_dir;
 
 pub struct LoggingService;
 
 static GLOBAL_TX: OnceLock<mpsc::UnboundedSender<LogMsg>> = OnceLock::new();
-static PATH_MAP: OnceLock<Mutex<HashMap<u64, (PathBuf, PathBuf)>>> = OnceLock::new();
-static IDX_TO_NAME: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+static IDX_TO_META: OnceLock<Mutex<HashMap<u64, ProcLogMeta>>> = OnceLock::new();
 static LOGS_SUBSCRIPTIONS: OnceLock<TokioMutex<Vec<LoggingSubscription>>> = OnceLock::new();
-static LOGS_SUBSCRIPTIONS_RX: OnceLock<TokioMutex<mpsc::Receiver<LoggingSubscriptionAction>>> =
-    OnceLock::new();
 
 const MAX_BUF_PER_PROC: usize = 8 * 1024 * 1024; // 8MB
 const FLUSH_SECS: u64 = 15;
 const BASE_BUF_CAP: usize = 4096;
+const CHUNK_SIZE: usize = 8192;
 
 type FileCache = HashMap<u64, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
 type BufCache = HashMap<u64, (Vec<u8>, Vec<u8>)>;
@@ -35,6 +36,7 @@ impl LoggingService {
     pub fn init() -> (
         mpsc::UnboundedReceiver<LogMsg>,
         mpsc::Sender<LoggingSubscriptionAction>,
+        mpsc::Receiver<LoggingSubscriptionAction>,
     ) {
         if GLOBAL_TX.get().is_some() {
             panic!("LoggingService::init() called more than once");
@@ -43,12 +45,10 @@ impl LoggingService {
         let (tx, rx) = mpsc::unbounded_channel::<LogMsg>();
         let (logs_tx, logs_rx) = mpsc::channel::<LoggingSubscriptionAction>(2);
         let _ = GLOBAL_TX.set(tx);
-        let _ = IDX_TO_NAME.set(Mutex::new(HashMap::new()));
-        let _ = PATH_MAP.set(Mutex::new(HashMap::new()));
+        let _ = IDX_TO_META.set(Mutex::new(HashMap::new()));
         let _ = LOGS_SUBSCRIPTIONS.set(TokioMutex::new(Vec::new()));
-        let _ = LOGS_SUBSCRIPTIONS_RX.set(TokioMutex::new(logs_rx));
 
-        (rx, logs_tx)
+        (rx, logs_tx, logs_rx)
     }
 
     fn shrink_buf(buf: &mut Vec<u8>) {
@@ -57,30 +57,37 @@ impl LoggingService {
         }
     }
 
-    fn ensure_paths(idx: u64) -> (PathBuf, PathBuf) {
-        let map = PATH_MAP.get().expect("PATH_MAP not initialized");
-        let mut map = map.lock().expect("PATH_MAP poisoned");
-
-        let proc_name = IDX_TO_NAME
-            .get()
-            .expect("LoggingService::init() must be called before get_logging_pair()")
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&idx)
-            .expect("idx not found in IDX_TO_NAME")
-            .clone();
-
-        if let Some((out, err)) = map.get(&idx) {
-            return (out.clone(), err.clone());
-        }
+    fn init_paths(idx: u64, proc_name: &str) -> (PathBuf, PathBuf) {
+        let map = IDX_TO_META.get().expect("IDX_TO_META not initialized");
+        let mut map = map.lock().expect("IDX_TO_META poisoned");
 
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
         let logs_dir = pm3_home_dir.join("processes").join(&proc_name);
         let stdout_path = logs_dir.join("stdout.log");
         let stderr_path = logs_dir.join("stderr.log");
 
-        map.insert(idx, (stdout_path.clone(), stderr_path.clone()));
+        map.insert(
+            idx,
+            ProcLogMeta {
+                proc_name: proc_name.to_string(),
+                stdout_path: stdout_path.clone(),
+                stderr_path: stderr_path.clone(),
+            },
+        );
         (stdout_path, stderr_path)
+    }
+
+    fn ensure_paths(idx: u64) -> Option<(PathBuf, PathBuf)> {
+        let map = IDX_TO_META.get().expect("PATH_MAP not initialized");
+        let map = map.lock().expect("PATH_MAP poisoned");
+
+        return match map.get(&idx) {
+            Some(meta) => Some((meta.stdout_path.clone(), meta.stderr_path.clone())),
+            None => {
+                eprintln!("impossible state");
+                None
+            }
+        };
     }
 
     async fn ensure_exists_or_reopen(
@@ -165,7 +172,8 @@ impl LoggingService {
             return;
         }
 
-        let (stdout_path, stderr_path) = Self::ensure_paths(idx);
+        let (stdout_path, stderr_path) =
+            Self::ensure_paths(idx).expect("Failed because logging_service had impossible state!");
 
         Self::ensure_exists_or_reopen(idx, &stdout_path, &stderr_path, file_cache).await;
 
@@ -232,11 +240,76 @@ impl LoggingService {
         }
     }
 
-    pub async fn dispatch(mut rx: mpsc::UnboundedReceiver<LogMsg>) {
+    async fn read_last_lines(path: &PathBuf, lines: usize) -> Vec<Vec<u8>> {
+        let mut file = match File::open(path).await {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+
+        let file_size = match file.metadata().await {
+            Ok(m) => m.len(),
+            Err(_) => return Vec::new(),
+        };
+
+        if file_size == 0 {
+            return Vec::new();
+        }
+
+        let mut pos = file_size as i64;
+        let mut buf = Vec::new();
+        let mut newline_count = 0;
+
+        while pos > 0 && newline_count <= lines {
+            let read_size = CHUNK_SIZE.min(pos as usize);
+            pos -= read_size as i64;
+
+            if file
+                .seek(std::io::SeekFrom::Start(pos as u64))
+                .await
+                .is_err()
+            {
+                break;
+            }
+
+            let mut chunk = vec![0u8; read_size];
+            if file.read_exact(&mut chunk).await.is_err() {
+                break;
+            }
+
+            newline_count += chunk.iter().filter(|&&b| b == b'\n').count();
+
+            buf.splice(0..0, chunk);
+        }
+
+        let mut lines_vec = Vec::new();
+        let mut start = 0;
+
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' {
+                lines_vec.push(buf[start..=i].to_vec());
+                start = i + 1;
+            }
+        }
+
+        if start < buf.len() {
+            lines_vec.push(buf[start..].to_vec());
+        }
+
+        if lines_vec.len() > lines {
+            lines_vec = lines_vec.split_off(lines_vec.len() - lines);
+        }
+
+        lines_vec
+    }
+
+    pub async fn dispatch(
+        mut rx: mpsc::UnboundedReceiver<LogMsg>,
+        logs_rx: mpsc::Receiver<LoggingSubscriptionAction>,
+    ) {
         let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut subs_channel_listener = LOGS_SUBSCRIPTIONS_RX.get().unwrap().lock().await;
+        let mut subs_channel_listener = logs_rx;
 
         let mut bytes_last_15s: u64 = 0;
 
@@ -280,13 +353,40 @@ impl LoggingService {
                 }
                 sub = subs_channel_listener.recv() => {
                     let Some(sub) = sub else {
-                        break;
+                        continue;
                     };
 
                     match sub {
                         LoggingSubscriptionAction::Subscribe { id, tx, programs, lines } => {
                             println!("Subscribtion: id={}, programs={:?}, lines={}", id, programs, lines);
-                            tx.send("RESULT".to_string()).ok();
+
+                            for program in &programs {
+                                let idx = match program.parse::<u64>() {
+                                    Ok(idx) => idx,
+                                    Err(_) => continue,
+                                };
+
+                                if !IDX_TO_META.get().expect("IDX_TO_META not initialized").lock().expect("IDX_TO_META poisoned").contains_key(&idx) {
+                                    continue;
+                                }
+
+                                let (stdout_path, stderr_path) = LoggingService::ensure_paths(idx).expect("Failed because logging_service had impossible state!");
+
+                                let mut out_lines = Self::read_last_lines(&stdout_path, lines as usize).await;
+                                let mut err_lines = Self::read_last_lines(&stderr_path, lines as usize).await;
+
+                                for line in out_lines.drain(..) {
+                                    let _ = tx.send(LogChunk::Line(format!("{} stdout {}", idx, String::from_utf8_lossy(&line))));
+                                }
+
+                                for line in err_lines.drain(..) {
+                                    let _ = tx.send(LogChunk::Line(format!("{} stderr {}", idx, String::from_utf8_lossy(&line))));
+                                }
+                            }
+
+                            // LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
+                            //     .await.push(LoggingSubscription { id, tx: tx.clone(), programs, lines });
+                            tx.send(LogChunk::Eof).ok();
                         }
                         LoggingSubscriptionAction::Unsubscribe { .. } => {}
                     }
@@ -317,14 +417,7 @@ impl LoggingService {
             .expect("LoggingService::init() must be called before get_logging_pair()")
             .clone();
 
-        let _ = IDX_TO_NAME
-            .get()
-            .expect("LoggingService::init() must be called before get_logging_pair()")
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(idx, proc_name.to_string());
-
-        let _ = Self::ensure_paths(idx);
+        let _ = Self::init_paths(idx, proc_name);
 
         let out = LoggingInstance::new(
             proc_name.to_string(),

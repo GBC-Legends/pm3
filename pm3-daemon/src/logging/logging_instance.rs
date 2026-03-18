@@ -1,14 +1,10 @@
 use std::io::Read;
 
+use crate::logging::StreamKind;
+
 use os_pipe::{PipeReader, PipeWriter, pipe};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-
-#[derive(Clone, Copy, Debug)]
-pub enum StreamKind {
-    Stdout,
-    Stderr,
-}
 
 #[derive(Debug)]
 pub struct LogMsg {

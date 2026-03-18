@@ -1,24 +1,8 @@
-use std::fmt::Display;
-
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
+use crate::logging::LogChunk;
 use crate::models::pm3_config::PmProcessConfig;
-
-#[derive(Debug, Clone)]
-pub enum LogChunk {
-    Line(String),
-    Eof,
-}
-
-impl Display for LogChunk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LogChunk::Line(s) => write!(f, "{s}"),
-            LogChunk::Eof => write!(f, "EOF"),
-        }
-    }
-}
 
 pub enum CmdReply {
     One(String),
