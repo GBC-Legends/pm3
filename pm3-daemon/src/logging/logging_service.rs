@@ -4,36 +4,39 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 
-use crate::logging::logging_instance::{LogMsg, LoggingInstance, StreamKind};
+use crate::logging::logging_instance::{LogMsg, LoggingInstance};
 use crate::logging::logging_subscription::{LoggingSubscription, LoggingSubscriptionAction};
+use crate::logging::{LogChunk, ProcLogMeta, StreamKind};
 use crate::utils::pm3_safe_dir;
 
 pub struct LoggingService;
 
 static GLOBAL_TX: OnceLock<mpsc::UnboundedSender<LogMsg>> = OnceLock::new();
-static PATH_MAP: OnceLock<Mutex<HashMap<String, (PathBuf, PathBuf)>>> = OnceLock::new();
+static IDX_TO_META: OnceLock<Mutex<HashMap<u64, ProcLogMeta>>> = OnceLock::new();
 static LOGS_SUBSCRIPTIONS: OnceLock<TokioMutex<Vec<LoggingSubscription>>> = OnceLock::new();
-static LOGS_SUBSCRIPTIONS_RX: OnceLock<TokioMutex<mpsc::Receiver<LoggingSubscriptionAction>>> =
-    OnceLock::new();
 
 const MAX_BUF_PER_PROC: usize = 8 * 1024 * 1024; // 8MB
 const FLUSH_SECS: u64 = 15;
 const BASE_BUF_CAP: usize = 4096;
+const CHUNK_SIZE: usize = 8192;
 
-type FileCache = HashMap<String, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
-type BufCache = HashMap<String, (Vec<u8>, Vec<u8>)>;
-type Activity15s = HashMap<String, (u64, u64)>;
+type FileCache = HashMap<u64, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
+type BufCache = HashMap<u64, (Vec<u8>, Vec<u8>)>;
+type Activity15s = HashMap<u64, (u64, u64)>;
 
 impl LoggingService {
     pub fn init() -> (
         mpsc::UnboundedReceiver<LogMsg>,
         mpsc::Sender<LoggingSubscriptionAction>,
+        mpsc::Receiver<LoggingSubscriptionAction>,
     ) {
         if GLOBAL_TX.get().is_some() {
             panic!("LoggingService::init() called more than once");
@@ -42,11 +45,10 @@ impl LoggingService {
         let (tx, rx) = mpsc::unbounded_channel::<LogMsg>();
         let (logs_tx, logs_rx) = mpsc::channel::<LoggingSubscriptionAction>(2);
         let _ = GLOBAL_TX.set(tx);
-        let _ = PATH_MAP.set(Mutex::new(HashMap::new()));
+        let _ = IDX_TO_META.set(Mutex::new(HashMap::new()));
         let _ = LOGS_SUBSCRIPTIONS.set(TokioMutex::new(Vec::new()));
-        let _ = LOGS_SUBSCRIPTIONS_RX.set(TokioMutex::new(logs_rx));
 
-        (rx, logs_tx)
+        (rx, logs_tx, logs_rx)
     }
 
     fn shrink_buf(buf: &mut Vec<u8>) {
@@ -55,28 +57,38 @@ impl LoggingService {
         }
     }
 
-    fn ensure_paths(proc_name: &str) -> (PathBuf, PathBuf) {
-        let map = PATH_MAP.get().expect("PATH_MAP not initialized");
-        let mut map = map.lock().expect("PATH_MAP poisoned");
-
-        if let Some((out, err)) = map.get(proc_name) {
-            return (out.clone(), err.clone());
-        }
+    fn init_paths(idx: u64, proc_name: &str) -> (PathBuf, PathBuf) {
+        let map = IDX_TO_META.get().expect("IDX_TO_META not initialized");
+        let mut map = map.lock().expect("IDX_TO_META poisoned");
 
         let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
-        let logs_dir = pm3_home_dir.join("processes").join(proc_name);
+        let logs_dir = pm3_home_dir.join("processes").join(&proc_name);
         let stdout_path = logs_dir.join("stdout.log");
         let stderr_path = logs_dir.join("stderr.log");
 
         map.insert(
-            proc_name.to_string(),
-            (stdout_path.clone(), stderr_path.clone()),
+            idx,
+            ProcLogMeta {
+                proc_name: proc_name.to_string(),
+                stdout_path: stdout_path.clone(),
+                stderr_path: stderr_path.clone(),
+            },
         );
         (stdout_path, stderr_path)
     }
 
+    fn ensure_paths(idx: u64) -> Option<(PathBuf, PathBuf)> {
+        let map = IDX_TO_META.get().expect("PATH_MAP not initialized");
+        let map = map.lock().expect("PATH_MAP poisoned");
+
+        return match map.get(&idx) {
+            Some(meta) => Some((meta.stdout_path.clone(), meta.stderr_path.clone())),
+            None => None,
+        };
+    }
+
     async fn ensure_exists_or_reopen(
-        proc_name: &str,
+        idx: u64,
         stdout_path: &PathBuf,
         stderr_path: &PathBuf,
         file_cache: &mut FileCache,
@@ -87,9 +99,9 @@ impl LoggingService {
         if !out_exists || !err_exists {
             eprintln!(
                 "[pm3][{}][warn] log file missing (stdout_exists={}, stderr_exists={}) -> reopening",
-                proc_name, out_exists, err_exists
+                idx, out_exists, err_exists
             );
-            if let Some((out_f, err_f)) = file_cache.get_mut(proc_name) {
+            if let Some((out_f, err_f)) = file_cache.get_mut(&idx) {
                 if !out_exists {
                     *out_f = None;
                 }
@@ -101,18 +113,16 @@ impl LoggingService {
     }
 
     async fn ensure_file_handles(
-        proc_name: &str,
+        idx: u64,
         stdout_path: &PathBuf,
         stderr_path: &PathBuf,
         file_cache: &mut FileCache,
     ) -> bool {
-        let entry = file_cache
-            .entry(proc_name.to_string())
-            .or_insert((None, None));
+        let entry = file_cache.entry(idx).or_insert((None, None));
 
         if let Some(parent) = stdout_path.parent() {
             if let Err(e) = fs::create_dir_all(parent).await {
-                eprintln!("create_dir_all error ({}): {}", proc_name, e);
+                eprintln!("create_dir_all error ({}): {}", idx, e);
                 return false;
             }
         }
@@ -126,7 +136,7 @@ impl LoggingService {
             {
                 Ok(f) => entry.0 = Some(f),
                 Err(e) => {
-                    eprintln!("open stdout log error ({}): {}", proc_name, e);
+                    eprintln!("open stdout log error ({}): {}", idx, e);
                     return false;
                 }
             }
@@ -141,7 +151,7 @@ impl LoggingService {
             {
                 Ok(f) => entry.1 = Some(f),
                 Err(e) => {
-                    eprintln!("open stderr log error ({}): {}", proc_name, e);
+                    eprintln!("open stderr log error ({}): {}", idx, e);
                     return false;
                 }
             }
@@ -150,8 +160,8 @@ impl LoggingService {
         true
     }
 
-    async fn flush_proc(proc_name: &str, buf_cache: &mut BufCache, file_cache: &mut FileCache) {
-        let Some((out_buf, err_buf)) = buf_cache.get_mut(proc_name) else {
+    async fn flush_proc(idx: u64, buf_cache: &mut BufCache, file_cache: &mut FileCache) {
+        let Some((out_buf, err_buf)) = buf_cache.get_mut(&idx) else {
             return;
         };
 
@@ -159,22 +169,23 @@ impl LoggingService {
             return;
         }
 
-        let (stdout_path, stderr_path) = Self::ensure_paths(proc_name);
+        let (stdout_path, stderr_path) =
+            Self::ensure_paths(idx).expect("Failed because logging_service had impossible state!");
 
-        Self::ensure_exists_or_reopen(proc_name, &stdout_path, &stderr_path, file_cache).await;
+        Self::ensure_exists_or_reopen(idx, &stdout_path, &stderr_path, file_cache).await;
 
-        if !Self::ensure_file_handles(proc_name, &stdout_path, &stderr_path, file_cache).await {
+        if !Self::ensure_file_handles(idx, &stdout_path, &stderr_path, file_cache).await {
             return;
         }
 
-        let Some((out_f_opt, err_f_opt)) = file_cache.get_mut(proc_name) else {
+        let Some((out_f_opt, err_f_opt)) = file_cache.get_mut(&idx) else {
             return;
         };
 
         if !out_buf.is_empty() {
             if let Some(out_f) = out_f_opt.as_mut() {
                 if let Err(e) = out_f.write_all(out_buf).await {
-                    eprintln!("stdout write error ({}): {} -> will reopen", proc_name, e);
+                    eprintln!("stdout write error ({}): {} -> will reopen", idx, e);
                     *out_f_opt = None;
                     return;
                 }
@@ -188,7 +199,7 @@ impl LoggingService {
         if !err_buf.is_empty() {
             if let Some(err_f) = err_f_opt.as_mut() {
                 if let Err(e) = err_f.write_all(err_buf).await {
-                    eprintln!("stderr write error ({}): {} -> will reopen", proc_name, e);
+                    eprintln!("stderr write error ({}): {} -> will reopen", idx, e);
                     *err_f_opt = None;
                     return;
                 }
@@ -201,19 +212,19 @@ impl LoggingService {
     }
 
     async fn flush_all(buf_cache: &mut BufCache, file_cache: &mut FileCache) {
-        let procs: Vec<String> = buf_cache.keys().cloned().collect();
-        for proc in procs {
-            Self::flush_proc(&proc, buf_cache, file_cache).await;
+        let procs: Vec<u64> = buf_cache.keys().cloned().collect();
+        for proc_idx in procs {
+            Self::flush_proc(proc_idx, buf_cache, file_cache).await;
         }
     }
 
     fn close_idle_fds(file_cache: &mut FileCache, activity_15s: &mut Activity15s) {
-        let procs: Vec<String> = activity_15s.keys().cloned().collect();
+        let procs: Vec<u64> = activity_15s.keys().cloned().collect();
 
-        for proc in procs {
-            let (out_b, err_b) = activity_15s.get(&proc).copied().unwrap_or((0, 0));
+        for proc_idx in procs {
+            let (out_b, err_b) = activity_15s.get(&proc_idx).copied().unwrap_or((0, 0));
 
-            if let Some((out_f, err_f)) = file_cache.get_mut(&proc) {
+            if let Some((out_f, err_f)) = file_cache.get_mut(&proc_idx) {
                 if out_b == 0 {
                     *out_f = None;
                 }
@@ -222,15 +233,80 @@ impl LoggingService {
                 }
             }
 
-            activity_15s.insert(proc, (0, 0));
+            activity_15s.insert(proc_idx, (0, 0));
         }
     }
 
-    pub async fn dispatch(mut rx: mpsc::UnboundedReceiver<LogMsg>) {
+    async fn read_last_lines(path: &PathBuf, lines: usize) -> Vec<Vec<u8>> {
+        let mut file = match File::open(path).await {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+
+        let file_size = match file.metadata().await {
+            Ok(m) => m.len(),
+            Err(_) => return Vec::new(),
+        };
+
+        if file_size == 0 {
+            return Vec::new();
+        }
+
+        let mut pos = file_size as i64;
+        let mut buf = Vec::new();
+        let mut newline_count = 0;
+
+        while pos > 0 && newline_count <= lines {
+            let read_size = CHUNK_SIZE.min(pos as usize);
+            pos -= read_size as i64;
+
+            if file
+                .seek(std::io::SeekFrom::Start(pos as u64))
+                .await
+                .is_err()
+            {
+                break;
+            }
+
+            let mut chunk = vec![0u8; read_size];
+            if file.read_exact(&mut chunk).await.is_err() {
+                break;
+            }
+
+            newline_count += chunk.iter().filter(|&&b| b == b'\n').count();
+
+            buf.splice(0..0, chunk);
+        }
+
+        let mut lines_vec = Vec::new();
+        let mut start = 0;
+
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' {
+                lines_vec.push(buf[start..=i].to_vec());
+                start = i + 1;
+            }
+        }
+
+        if start < buf.len() {
+            lines_vec.push(buf[start..].to_vec());
+        }
+
+        if lines_vec.len() > lines {
+            lines_vec = lines_vec.split_off(lines_vec.len() - lines);
+        }
+
+        lines_vec
+    }
+
+    pub async fn dispatch(
+        mut rx: mpsc::UnboundedReceiver<LogMsg>,
+        logs_rx: mpsc::Receiver<LoggingSubscriptionAction>,
+    ) {
         let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut subs_channel_listener = LOGS_SUBSCRIPTIONS_RX.get().unwrap().lock().await;
+        let mut subs_channel_listener = logs_rx;
 
         let mut bytes_last_15s: u64 = 0;
 
@@ -246,14 +322,14 @@ impl LoggingService {
                             let n = msg.bytes.len() as u64;
                             bytes_last_15s += n;
 
-                            let act = activity_15s.entry(msg.proc_name.clone()).or_insert((0,0));
+                            let act = activity_15s.entry(msg.idx).or_insert((0,0));
                             match msg.stream {
                                 StreamKind::Stdout => act.0 += n,
                                 StreamKind::Stderr => act.1 += n,
                             }
 
                             let entry = buf_cache
-                                .entry(msg.proc_name.clone())
+                                .entry(msg.idx)
                                 .or_insert_with(|| (Vec::with_capacity(4096), Vec::with_capacity(4096)));
 
                             match msg.stream {
@@ -263,7 +339,7 @@ impl LoggingService {
 
                             let total = entry.0.len() + entry.1.len();
                             if total >= MAX_BUF_PER_PROC {
-                                Self::flush_proc(&msg.proc_name, &mut buf_cache, &mut file_cache).await;
+                                Self::flush_proc(msg.idx, &mut buf_cache, &mut file_cache).await;
                             }
                         }
                         None => {
@@ -274,11 +350,39 @@ impl LoggingService {
                 }
                 sub = subs_channel_listener.recv() => {
                     let Some(sub) = sub else {
-                        break;
+                        continue;
                     };
 
                     match sub {
-                        LoggingSubscriptionAction::Subscribe { id, tx, programs, lines } => {}
+                        LoggingSubscriptionAction::Subscribe { id, tx, programs, lines } => {
+                            println!("Subscribtion: id={}, programs={:?}, lines={}", id, programs, lines);
+
+                            for program in &programs {
+                                let idx = match program.parse::<u64>() {
+                                    Ok(idx) => idx,
+                                    Err(_) => continue,
+                                };
+
+                                let Some((stdout_path, stderr_path)) = Self::ensure_paths(idx) else {
+                                    continue;
+                                };
+
+                                let mut out_lines = Self::read_last_lines(&stdout_path, lines as usize).await;
+                                let mut err_lines = Self::read_last_lines(&stderr_path, lines as usize).await;
+
+                                for line in out_lines.drain(..) {
+                                    let _ = tx.send(LogChunk::Line(format!("{} stdout {}", idx, String::from_utf8_lossy(&line))));
+                                }
+
+                                for line in err_lines.drain(..) {
+                                    let _ = tx.send(LogChunk::Line(format!("{} stderr {}", idx, String::from_utf8_lossy(&line))));
+                                }
+                            }
+
+                            // LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
+                            //     .await.push(LoggingSubscription { id, tx: tx.clone(), programs, lines });
+                            tx.send(LogChunk::Eof).ok();
+                        }
                         LoggingSubscriptionAction::Unsubscribe { .. } => {}
                     }
                 }
@@ -299,7 +403,7 @@ impl LoggingService {
         }
     }
 
-    pub fn get_logging_pair(proc_name: &str) -> (Stdio, Stdio) {
+    pub fn get_logging_pair(idx: u64, proc_name: &str) -> (Stdio, Stdio) {
         let handle = Handle::try_current()
             .expect("LoggingService::get_logging_pair requires a running tokio runtime");
 
@@ -308,16 +412,17 @@ impl LoggingService {
             .expect("LoggingService::init() must be called before get_logging_pair()")
             .clone();
 
-        let _ = Self::ensure_paths(proc_name);
+        let _ = Self::init_paths(idx, proc_name);
 
         let out = LoggingInstance::new(
             proc_name.to_string(),
+            idx,
             StreamKind::Stdout,
             tx.clone(),
             handle.clone(),
         );
 
-        let err = LoggingInstance::new(proc_name.to_string(), StreamKind::Stderr, tx, handle);
+        let err = LoggingInstance::new(proc_name.to_string(), idx, StreamKind::Stderr, tx, handle);
 
         (out.into(), err.into())
     }
