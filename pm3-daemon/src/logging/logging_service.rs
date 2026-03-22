@@ -238,6 +238,10 @@ impl LoggingService {
     }
 
     async fn read_last_lines(path: &PathBuf, lines: usize) -> Vec<Vec<u8>> {
+        if lines == 0 {
+            return Vec::new();
+        }
+
         let mut file = match File::open(path).await {
             Ok(f) => f,
             Err(_) => return Vec::new(),
@@ -252,30 +256,33 @@ impl LoggingService {
             return Vec::new();
         }
 
-        let mut pos = file_size as i64;
-        let mut buf = Vec::new();
-        let mut newline_count = 0;
+        let mut pos = file_size;
+        let mut newline_count = 0usize;
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
 
         while pos > 0 && newline_count <= lines {
             let read_size = CHUNK_SIZE.min(pos as usize);
-            pos -= read_size as i64;
+            pos -= read_size as u64;
 
-            if file
-                .seek(std::io::SeekFrom::Start(pos as u64))
-                .await
-                .is_err()
-            {
-                break;
+            if file.seek(std::io::SeekFrom::Start(pos)).await.is_err() {
+                return Vec::new();
             }
 
             let mut chunk = vec![0u8; read_size];
             if file.read_exact(&mut chunk).await.is_err() {
-                break;
+                return Vec::new();
             }
 
             newline_count += chunk.iter().filter(|&&b| b == b'\n').count();
+            chunks.push(chunk);
+        }
 
-            buf.splice(0..0, chunk);
+        chunks.reverse();
+
+        let total_len: usize = chunks.iter().map(|c| c.len()).sum();
+        let mut buf = Vec::with_capacity(total_len);
+        for chunk in chunks {
+            buf.extend_from_slice(&chunk);
         }
 
         let mut lines_vec = Vec::new();
