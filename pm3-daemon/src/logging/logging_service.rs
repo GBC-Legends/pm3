@@ -260,7 +260,7 @@ impl LoggingService {
         let mut newline_count = 0usize;
         let mut chunks: Vec<Vec<u8>> = Vec::new();
 
-        while pos > 0 && newline_count <= lines {
+        while pos > 0 && newline_count < lines + 1 {
             let read_size = CHUNK_SIZE.min(pos as usize);
             pos -= read_size as u64;
 
@@ -386,20 +386,24 @@ impl LoggingService {
                                 }
                             }
 
-                            // LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
-                            //     .await.push(LoggingSubscription { id, tx: tx.clone(), programs, lines });
-                            tx.send(LogChunk::Eof).ok();
+                            LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
+                                .await.push(LoggingSubscription { id, tx: tx.clone(), programs, lines });
                         }
-                        LoggingSubscriptionAction::Unsubscribe { .. } => {}
+                        LoggingSubscriptionAction::Unsubscribe { id } => {
+                            LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
+                                .await.retain(|sub| sub.id != id);
+                        }
                     }
                 }
 
                 _ = tick.tick() => {
-                    println!(
-                        "[pm3][stats] received {} bytes in last 15s (~{} B/s)",
-                        bytes_last_15s,
-                        bytes_last_15s / FLUSH_SECS
-                    );
+                    if bytes_last_15s > 0 {
+                        println!(
+                            "[pm3][stats] received {} bytes in last 15s (~{} B/s)",
+                            bytes_last_15s,
+                            bytes_last_15s / FLUSH_SECS
+                        );
+                    }
                     bytes_last_15s = 0;
 
                     Self::flush_all(&mut buf_cache, &mut file_cache).await;
