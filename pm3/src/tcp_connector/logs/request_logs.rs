@@ -1,6 +1,7 @@
 use crate::tcp_connector::{AAD, init_stream, send_secure_command};
 use crate::utils::config::Config;
 use crate::utils::encryption::{decrypt_wire_line, encrypt_reply_to_token};
+use std::collections::HashMap;
 
 use crossterm::style::{Color, Stylize};
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result, Write};
@@ -8,6 +9,7 @@ use std::io::{BufRead, BufReader, Error, ErrorKind, Result, Write};
 pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()> {
     let config = Config::load();
     let key = config.key();
+    let process_names = get_process_names()?;
 
     if programs.is_empty() {
         let all = send_secure_command("list programs")?;
@@ -62,35 +64,41 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
                 if let Some(rest) = msg.strip_prefix("LOG ") {
                     let parts: Vec<&str> = rest.splitn(3, ' ').collect();
 
-                    if parts.len() == 3 {
-                        let pid = parts[0];
-                        let stream = parts[1];
-                        let text = parts[2];
-
-                        match stream {
-                            "stdout" => {
-                                println!(
-                                    "[{}][{}] {}",
-                                    pid.with(Color::Blue),
-                                    "out".with(Color::Green),
-                                    text
-                                );
-                            }
-                            "stderr" => {
-                                println!(
-                                    "[{}][{}] {}",
-                                    pid.with(Color::Blue),
-                                    "err".with(Color::Red),
-                                    text
-                                );
-                            }
-                            _ => {
-                                println!("{msg}");
-                            }
-                        }
-
+                    if parts.len() < 3 {
                         continue;
                     }
+
+                    let pid = parts[0];
+                    let stream = parts[1];
+                    let text = parts[2].trim();
+
+                    if text.is_empty() {
+                        continue;
+                    }
+
+                    let name = process_names.get(pid).map(|s| s.as_str()).unwrap_or("?");
+
+                    match stream {
+                        "stdout" => {
+                            println!(
+                                "[{}:{}] {}",
+                                pid.with(Color::Blue),
+                                name.with(Color::Cyan),
+                                text.with(Color::Green)
+                            );
+                        }
+                        "stderr" => {
+                            println!(
+                                "[{}:{}] {}",
+                                pid.with(Color::Blue),
+                                name.with(Color::Cyan),
+                                text.with(Color::Red)
+                            );
+                        }
+                        _ => {}
+                    }
+
+                    continue;
                 }
 
                 println!("{msg}");
@@ -104,4 +112,27 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
     }
 
     Ok(())
+}
+
+fn get_process_names() -> Result<HashMap<String, String>> {
+    let mut names = HashMap::new();
+
+    let reply = send_secure_command("list-programs")?;
+
+    let clean = if let Some(rest) = reply.strip_prefix("OK ") {
+        rest
+    } else {
+        &reply
+    };
+
+    let parts: Vec<&str> = clean.split_whitespace().collect();
+
+    let mut i = 0;
+
+    while i + 1 < parts.len() {
+        names.insert(parts[i].to_string(), parts[i + 1].to_string());
+        i += 2;
+    }
+
+    Ok(names)
 }

@@ -201,7 +201,7 @@ impl ProcessRunner {
                 let mut out = Vec::new();
                 for process in &self.processes {
                     let p_handle = process.clone();
-                    out.push(p_handle.idx.to_string());
+                    out.push(format!("{} {}", p_handle.idx, p_handle.proc_name));
                 }
                 let _ = reply.send(Ok(out.join(" ")));
                 Ok(())
