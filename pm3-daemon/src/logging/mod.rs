@@ -21,6 +21,7 @@ pub enum StreamKind {
 pub enum LogChunk {
     Line(String),
     Eof,
+    Ping,
 }
 
 impl Display for LogChunk {
@@ -28,6 +29,7 @@ impl Display for LogChunk {
         match self {
             LogChunk::Line(s) => write!(f, "{s}"),
             LogChunk::Eof => write!(f, "EOF"),
+            LogChunk::Ping => write!(f, "PING"),
         }
     }
 }
