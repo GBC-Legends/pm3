@@ -1,7 +1,8 @@
 use crate::tcp_connector::{AAD, init_stream, send_secure_command};
 use crate::utils::config::Config;
-use crate::utils::encryption::{DecryptError, decrypt_wire_line, encrypt_reply_to_token};
+use crate::utils::encryption::{decrypt_wire_line, encrypt_reply_to_token};
 
+use crossterm::style::{Color, Stylize};
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result, Write};
 
 pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()> {
@@ -13,8 +14,6 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
         programs = all.split_whitespace().map(|s| s.to_string()).collect();
     }
 
-    let mut stream = init_stream()?;
-
     let mut cmd = String::from("logs");
 
     if let Some(n) = lines {
@@ -25,6 +24,8 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
         cmd.push(' ');
         cmd.push_str(&programs.join(" "));
     }
+
+    let mut stream = init_stream()?;
 
     let token = encrypt_reply_to_token(&key, cmd.as_bytes(), AAD);
     let out_line = format!("ENC {}\n", token);
@@ -38,33 +39,11 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
         let mut line = String::new();
 
         match reader.read_line(&mut line) {
-            Ok(0) => {
-                eprintln!("pm3: daemon closed log stream");
-                break;
-            }
+            Ok(0) => break,
 
             Ok(_) => {
-                let decrypted = match decrypt_wire_line(&key, &line, AAD) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        match e {
-                            DecryptError::BadBase64(e) => {
-                                eprintln!("pm3: invalid base64 from daemon: {}", e);
-                            }
-                            DecryptError::TooShort => {
-                                eprintln!("pm3: daemon log message too short");
-                            }
-                            DecryptError::BadVersion(v) => {
-                                eprintln!("pm3: unsupported encryption version: {}", v);
-                            }
-                            DecryptError::Crypto => {
-                                eprintln!("pm3: failed to authenticate log message");
-                            }
-                        }
-
-                        return Err(Error::new(ErrorKind::InvalidData, "log decryption failed"));
-                    }
-                };
+                let decrypted = decrypt_wire_line(&key, &line, AAD)
+                    .map_err(|_| Error::new(ErrorKind::InvalidData, "log decryption failed"))?;
 
                 let mut msg = String::from_utf8_lossy(&decrypted).trim().to_string();
 
@@ -74,6 +53,44 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
 
                 if msg == "EOF" {
                     break;
+                }
+
+                if msg == "LOGS" {
+                    continue;
+                }
+
+                if let Some(rest) = msg.strip_prefix("LOG ") {
+                    let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+
+                    if parts.len() == 3 {
+                        let pid = parts[0];
+                        let stream = parts[1];
+                        let text = parts[2];
+
+                        match stream {
+                            "stdout" => {
+                                println!(
+                                    "[{}][{}] {}",
+                                    pid.with(Color::Blue),
+                                    "out".with(Color::Green),
+                                    text
+                                );
+                            }
+                            "stderr" => {
+                                println!(
+                                    "[{}][{}] {}",
+                                    pid.with(Color::Blue),
+                                    "err".with(Color::Red),
+                                    text
+                                );
+                            }
+                            _ => {
+                                println!("{msg}");
+                            }
+                        }
+
+                        continue;
+                    }
                 }
 
                 println!("{msg}");
