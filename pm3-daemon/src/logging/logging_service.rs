@@ -425,15 +425,9 @@ impl LoggingService {
 
         let _ = Self::init_paths(idx, proc_name);
 
-        let out = LoggingInstance::new(
-            proc_name.to_string(),
-            idx,
-            StreamKind::Stdout,
-            tx.clone(),
-            handle.clone(),
-        );
+        let out = LoggingInstance::new(idx, StreamKind::Stdout, tx.clone(), handle.clone());
 
-        let err = LoggingInstance::new(proc_name.to_string(), idx, StreamKind::Stderr, tx, handle);
+        let err = LoggingInstance::new(idx, StreamKind::Stderr, tx, handle);
 
         (out.into(), err.into())
     }

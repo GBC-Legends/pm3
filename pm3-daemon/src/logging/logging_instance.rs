@@ -20,14 +20,13 @@ pub struct LoggingInstance {
 
 impl LoggingInstance {
     pub fn new(
-        proc_name: String,
         idx: u64,
         stream: StreamKind,
         tx: mpsc::UnboundedSender<LogMsg>,
         handle: Handle,
     ) -> Self {
         let (reader, writer) = pipe().expect("pipe failed");
-        let task = Self::spawn_reader(reader, proc_name, idx, stream, tx, handle);
+        let task = Self::spawn_reader(reader, idx, stream, tx, handle);
 
         Self {
             writer: Some(writer),
@@ -37,7 +36,6 @@ impl LoggingInstance {
 
     fn spawn_reader(
         reader: PipeReader,
-        proc_name: String,
         idx: u64,
         stream: StreamKind,
         tx: mpsc::UnboundedSender<LogMsg>,
