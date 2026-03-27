@@ -22,11 +22,12 @@ impl ExposingService {
             .parse()
             .expect("invalid bind address");
 
-        println!("ExposingService is listening on {}", addr);
-
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .expect(format!("failed to bind with address: {}", addr).as_str());
+
+        println!("ExposingService is listening on {}", addr);
+
         let _ = axum::serve(listener, app).await;
     }
 
