@@ -17,21 +17,27 @@ pub struct ProcessRunner {
 }
 
 impl ProcessRunner {
-    pub fn init(subs_sender: mpsc::Sender<LoggingSubscriptionAction>) -> Self {
+    pub fn init(
+        subs_sender: mpsc::Sender<LoggingSubscriptionAction>,
+    ) -> (Self, Vec<(u64, String)>) {
         let mut slf = ProcessRunner {
             subs_sender,
             processes: Vec::new(),
         };
+
+        let mut processes_metrics = Vec::new();
+
         use crate::utils::pm3_safe_cfg_handler;
 
         let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
         for cfg in configs_dir {
             let process = PmProcess::new(cfg, idx::alloc_id());
+            processes_metrics.push((process.idx, process.proc_name.to_string()));
             slf.processes.push(Arc::new(process));
         }
 
-        return slf;
+        return (slf, processes_metrics);
     }
 
     pub async fn run(&mut self) -> Result<()> {

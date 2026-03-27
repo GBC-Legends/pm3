@@ -330,7 +330,7 @@ impl PmProcess {
             let cpu = proc_.cpu_usage();
 
             let metrics_log = MetricsLog {
-                proc_name: self.proc_name.as_ref().to_string(),
+                external_id: self.idx,
                 cpu_usage: cpu,
                 memory_usage: mem_mb as u64,
             };
