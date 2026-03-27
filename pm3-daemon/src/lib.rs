@@ -1,3 +1,4 @@
+mod api;
 mod command_handler;
 mod daemon_config;
 mod logging;
@@ -6,9 +7,11 @@ mod models;
 mod process_runner;
 mod utils;
 
+use crate::api::metrics_exposing_service::ExposingService;
 use crate::command_handler::commands::RunnerCommand;
 use crate::logging::logging_service::LoggingService;
 use crate::metrics::metrics_service::MetricsService;
+
 use command_handler::tcp_listener::TcpCommandHandler;
 use process_runner::runner;
 use tokio::sync::mpsc;
@@ -18,12 +21,17 @@ pub async fn start_application() -> anyhow::Result<()> {
 
     let (logging_rx, logging_subs_tx, logging_subs_rx) = LoggingService::init();
     let metrics_rx = MetricsService::init();
+    let exposing_service =
+        ExposingService::init(&pm3_cfg.metrics_api_addr, pm3_cfg.metrics_api_port);
 
     tokio::spawn(async move {
         LoggingService::dispatch(logging_rx, logging_subs_rx).await;
     });
     tokio::spawn(async move {
         MetricsService::dispatch(metrics_rx).await;
+    });
+    tokio::spawn(async move {
+        ExposingService::dispatch(&exposing_service).await;
     });
 
     let mut pm3_runner = runner::ProcessRunner::init(logging_subs_tx);

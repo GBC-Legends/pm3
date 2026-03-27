@@ -24,7 +24,7 @@ impl TcpCommandHandler {
     ) -> anyhow::Result<Self> {
         let addr = format!("127.0.0.1:{}", config.port);
         let listener = TcpListener::bind(&addr).await?;
-        println!("Listening on {}", &addr);
+        println!("TcpCommandHandler is listening on {}", &addr);
 
         CFG.set(config.clone())
             .expect("TcpCommandHandler initialized twice");

@@ -10,16 +10,25 @@ use std::net::{SocketAddr, TcpListener};
 use std::os::unix::fs::OpenOptionsExt;
 
 const DEFAULT_PORT: u16 = 8046;
+const DEFAULT_METRICS_API_PORT: u16 = 8096;
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
     pub port: u16,
     pub key_b64: String,
+    pub metrics_api_port: u16,
+    pub metrics_api_addr: String,
 }
 
 impl DaemonConfig {
     pub fn new() -> anyhow::Result<Self> {
-        let port = Self::find_available_port()?;
+        let port = Self::find_available_port_with_default(DEFAULT_PORT)?;
+
+        // is expected to be stable for proper reverse_proxy
+        // to set up later with proper SSL and TLS support and auth in the way suits your needs better.
+        // we do not want you to be forced to stick to JWT, Bearer, SSO, Oauth2.
+        // you can select level of security you have to use that suits your needs better.
+        let metrics_api_port = DEFAULT_METRICS_API_PORT;
 
         let mut key = [0u8; 32];
         OsRng.fill_bytes(&mut key);
@@ -27,6 +36,8 @@ impl DaemonConfig {
         let result = Self {
             port,
             key_b64: URL_SAFE_NO_PAD.encode(key),
+            metrics_api_port,
+            metrics_api_addr: "127.0.0.1".to_string(),
         };
 
         result.dump()?;
@@ -34,9 +45,9 @@ impl DaemonConfig {
         Ok(result)
     }
 
-    fn find_available_port() -> anyhow::Result<u16> {
-        if Self::is_port_free(DEFAULT_PORT) {
-            return Ok(DEFAULT_PORT);
+    fn find_available_port_with_default(default_port: u16) -> anyhow::Result<u16> {
+        if Self::is_port_free(default_port) {
+            return Ok(default_port);
         }
 
         let listener =
