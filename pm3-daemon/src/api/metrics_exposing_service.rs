@@ -336,21 +336,9 @@ impl ExposingService {
                 .get(2)
                 .map_err(|e| format!("row mem_kib error: {}", e))?;
 
-            let ts_u64 = if ts < 0 { 0 } else { ts as u64 };
-            let cpu_x10 = if cpu_x10_i64 < 0 {
-                0
-            } else if cpu_x10_i64 > u16::MAX as i64 {
-                u16::MAX
-            } else {
-                cpu_x10_i64 as u16
-            };
-            let mem_kib = if mem_kib_i64 < 0 {
-                0
-            } else if mem_kib_i64 > u32::MAX as i64 {
-                u32::MAX
-            } else {
-                mem_kib_i64 as u32
-            };
+            let ts_u64 = ts.max(0) as u64;
+            let cpu_x10 = cpu_x10_i64.clamp(0, u16::MAX as i64) as u16;
+            let mem_kib = mem_kib_i64.clamp(0, u32::MAX as i64) as u32;
 
             Self::encode_metric_record(ts_u64, cpu_x10, mem_kib, &mut rec);
 
