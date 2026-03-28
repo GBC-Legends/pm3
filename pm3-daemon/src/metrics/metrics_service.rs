@@ -33,28 +33,20 @@ struct MetricsRow {
 #[derive(Debug)]
 enum DbMsg {
     Batch(Vec<MetricsRow>),
+    SyncProcesses(Vec<ProcessSeed>),
     Shutdown,
     CleanDb,
 }
 
 static GLOBAL_TX: OnceLock<mpsc::Sender<MetricsLog>> = OnceLock::new();
 static GLOBAL_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-static GLOBAL_PROCESSES: OnceLock<Vec<ProcessSeed>> = OnceLock::new();
+static GLOBAL_DB_TX: OnceLock<mpsc::Sender<DbMsg>> = OnceLock::new();
 
 impl MetricsService {
     pub fn init(processes: Vec<(u64, String)>) -> (mpsc::Receiver<MetricsLog>, PathBuf) {
         if GLOBAL_TX.get().is_some() {
             panic!("MetricsService::init() called more than once");
         }
-
-        let seeded = processes
-            .into_iter()
-            .map(|(external_id, name)| ProcessSeed { external_id, name })
-            .collect::<Vec<_>>();
-
-        GLOBAL_PROCESSES
-            .set(seeded)
-            .expect("Failed to set GLOBAL_PROCESSES");
 
         let (tx, rx) = mpsc::channel(256);
         GLOBAL_TX.set(tx).expect("Failed to set GLOBAL_TX");
@@ -63,6 +55,16 @@ impl MetricsService {
         GLOBAL_DB_PATH
             .set(db_path.clone())
             .expect("Failed to set GLOBAL_DB_PATH");
+
+        let seeded = processes
+            .into_iter()
+            .map(|(external_id, name)| ProcessSeed { external_id, name })
+            .collect::<Vec<_>>();
+
+        let db_tx = spawn_db_worker(&db_path, seeded);
+        GLOBAL_DB_TX
+            .set(db_tx)
+            .expect("Failed to set GLOBAL_DB_TX");
 
         (rx, db_path)
     }
@@ -74,17 +76,27 @@ impl MetricsService {
             .clone()
     }
 
-    pub async fn dispatch(mut rx: mpsc::Receiver<MetricsLog>) {
-        let db_path = GLOBAL_DB_PATH
+    pub async fn sync_processes(processes: Vec<(u64, String)>) -> Result<(), String> {
+        let db_tx = GLOBAL_DB_TX
             .get()
             .expect("MetricsService::init() not called");
 
-        let processes = GLOBAL_PROCESSES
+        let seeded = processes
+            .into_iter()
+            .map(|(external_id, name)| ProcessSeed { external_id, name })
+            .collect::<Vec<_>>();
+
+        db_tx
+            .send(DbMsg::SyncProcesses(seeded))
+            .await
+            .map_err(|e| format!("failed to send SyncProcesses to db worker: {}", e))
+    }
+
+    pub async fn dispatch(mut rx: mpsc::Receiver<MetricsLog>) {
+        let db_tx = GLOBAL_DB_TX
             .get()
             .expect("MetricsService::init() not called")
             .clone();
-
-        let db_tx = spawn_db_worker(db_path, processes);
 
         const FLUSH_SECS: u64 = 1;
         const MAX_BATCH: usize = 256;
@@ -151,7 +163,7 @@ impl MetricsService {
     }
 }
 
-fn spawn_db_worker(db_path: &PathBuf, processes: Vec<ProcessSeed>) -> mpsc::Sender<DbMsg> {
+fn spawn_db_worker(db_path: &PathBuf, initial_processes: Vec<ProcessSeed>) -> mpsc::Sender<DbMsg> {
     let (tx, mut rx) = mpsc::channel::<DbMsg>(64);
     let db_path = db_path.clone();
 
@@ -182,11 +194,14 @@ fn spawn_db_worker(db_path: &PathBuf, processes: Vec<ProcessSeed>) -> mpsc::Send
                     CREATE TABLE IF NOT EXISTS processes (
                         id           INTEGER PRIMARY KEY AUTOINCREMENT,
                         external_id  INTEGER NOT NULL UNIQUE,
-                        name         TEXT NOT NULL
+                        name         TEXT NOT NULL UNIQUE
                     );
 
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_processes_external_id
                         ON processes(external_id);
+
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_processes_name
+                        ON processes(name);
 
                     CREATE TABLE IF NOT EXISTS metrics (
                         process_id INTEGER NOT NULL,
@@ -201,30 +216,30 @@ fn spawn_db_worker(db_path: &PathBuf, processes: Vec<ProcessSeed>) -> mpsc::Send
                 .map_err(|e| format!("metrics sqlite init error: {}", e))
             };
 
-            let seed_processes = |conn: &mut Connection, processes: &[ProcessSeed]| -> Result<(), String> {
-                let tx_seed = conn
+            let sync_processes = |conn: &mut Connection, processes: &[ProcessSeed]| -> Result<(), String> {
+                let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(|e| format!("metrics sqlite begin seed tx error: {}", e))?;
+                    .map_err(|e| format!("metrics sqlite begin sync tx error: {}", e))?;
 
                 (|| -> Result<(), String> {
-                    let mut upsert_proc_stmt = tx_seed
+                    let mut upsert_proc_stmt = tx
                         .prepare_cached(
                             r#"
                             INSERT INTO processes(external_id, name)
                             VALUES (?1, ?2)
-                            ON CONFLICT(external_id) DO UPDATE SET
-                                name = excluded.name
+                            ON CONFLICT(name) DO UPDATE SET
+                                external_id = excluded.external_id
                             "#,
                         )
-                        .map_err(|e| format!("metrics sqlite prepare seed stmt error: {}", e))?;
+                        .map_err(|e| format!("metrics sqlite prepare sync stmt error: {}", e))?;
 
                     for proc in processes {
                         upsert_proc_stmt
                             .execute(params![proc.external_id as i64, &proc.name])
                             .map_err(|e| {
                                 format!(
-                                    "metrics sqlite seed process error external_id={}: {}",
-                                    proc.external_id, e
+                                    "metrics sqlite sync process error name={} external_id={}: {}",
+                                    proc.name, proc.external_id, e
                                 )
                             })?;
                     }
@@ -232,9 +247,8 @@ fn spawn_db_worker(db_path: &PathBuf, processes: Vec<ProcessSeed>) -> mpsc::Send
                     Ok(())
                 })()?;
 
-                tx_seed
-                    .commit()
-                    .map_err(|e| format!("metrics sqlite seed commit error: {}", e))
+                tx.commit()
+                    .map_err(|e| format!("metrics sqlite sync commit error: {}", e))
             };
 
             let warm_proc_cache = |conn: &Connection| -> Result<HashMap<u64, i64>, String> {
@@ -364,7 +378,7 @@ fn spawn_db_worker(db_path: &PathBuf, processes: Vec<ProcessSeed>) -> mpsc::Send
                 return;
             }
 
-            if let Err(e) = seed_processes(&mut conn, &processes) {
+            if let Err(e) = sync_processes(&mut conn, &initial_processes) {
                 eprintln!("{e}");
                 return;
             }
@@ -383,6 +397,21 @@ fn spawn_db_worker(db_path: &PathBuf, processes: Vec<ProcessSeed>) -> mpsc::Send
                         if let Err(e) = flush_batch(&mut conn, &mut proc_cache, rows) {
                             eprintln!("{e}");
                         }
+                    }
+
+                    DbMsg::SyncProcesses(processes) => {
+                        if let Err(e) = sync_processes(&mut conn, &processes) {
+                            eprintln!("{e}");
+                            continue;
+                        }
+
+                        proc_cache = match warm_proc_cache(&conn) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("{e}");
+                                HashMap::new()
+                            }
+                        };
                     }
 
                     DbMsg::CleanDb => match clean_db(&mut conn) {
