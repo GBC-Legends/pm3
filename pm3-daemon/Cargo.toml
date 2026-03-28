@@ -15,7 +15,10 @@ chacha20poly1305 = "0.10"
 rand_core = "0.6"
 base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-tower-http = { version = "0.6", default-features = false, features = ["fs"] }
+tower-http = { version = "0.6", default-features = false, features = ["fs", "cors"] }
+zstd = { version = "0.13", default-features = false }
+bytes = "1.0"
+tokio-stream = { version = "0.1" }
 
 [profile.release]
 lto = "fat"
