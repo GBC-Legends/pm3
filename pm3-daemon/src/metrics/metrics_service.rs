@@ -22,6 +22,12 @@ struct ProcessSeed {
     name: String,
 }
 
+impl From<(u64, String)> for ProcessSeed {
+    fn from((external_id, name): (u64, String)) -> Self {
+        Self { external_id, name }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MetricsRow {
     external_id: u64,
@@ -33,7 +39,7 @@ struct MetricsRow {
 #[derive(Debug)]
 enum DbMsg {
     Batch(Vec<MetricsRow>),
-    SyncProcesses(Vec<ProcessSeed>),
+    SyncNewProcess((u64, String)),
     Shutdown,
     CleanDb,
 }
@@ -62,9 +68,7 @@ impl MetricsService {
             .collect::<Vec<_>>();
 
         let db_tx = spawn_db_worker(&db_path, seeded);
-        GLOBAL_DB_TX
-            .set(db_tx)
-            .expect("Failed to set GLOBAL_DB_TX");
+        GLOBAL_DB_TX.set(db_tx).expect("Failed to set GLOBAL_DB_TX");
 
         (rx, db_path)
     }
@@ -76,18 +80,13 @@ impl MetricsService {
             .clone()
     }
 
-    pub async fn sync_processes(processes: Vec<(u64, String)>) -> Result<(), String> {
+    pub async fn sync_new_process(process: (u64, String)) -> Result<(), String> {
         let db_tx = GLOBAL_DB_TX
             .get()
             .expect("MetricsService::init() not called");
 
-        let seeded = processes
-            .into_iter()
-            .map(|(external_id, name)| ProcessSeed { external_id, name })
-            .collect::<Vec<_>>();
-
         db_tx
-            .send(DbMsg::SyncProcesses(seeded))
+            .send(DbMsg::SyncNewProcess(process))
             .await
             .map_err(|e| format!("failed to send SyncProcesses to db worker: {}", e))
     }
@@ -399,8 +398,8 @@ fn spawn_db_worker(db_path: &PathBuf, initial_processes: Vec<ProcessSeed>) -> mp
                         }
                     }
 
-                    DbMsg::SyncProcesses(processes) => {
-                        if let Err(e) = sync_processes(&mut conn, &processes) {
+                    DbMsg::SyncNewProcess(process) => {
+                        if let Err(e) = sync_processes(&mut conn, &[process.into()]) {
                             eprintln!("{e}");
                             continue;
                         }

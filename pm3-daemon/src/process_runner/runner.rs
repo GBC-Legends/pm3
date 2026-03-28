@@ -1,6 +1,7 @@
 use crate::command_handler::commands::RunnerCommand;
 use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
+use crate::metrics::metrics_service::MetricsService;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
 use anyhow::Result;
@@ -127,6 +128,14 @@ impl ProcessRunner {
 
                 if let Err(e) = process.awake().await {
                     let _ = reply.send(Err(e.into()));
+                    return Ok(());
+                }
+
+                if let Err(e) =
+                    MetricsService::sync_new_process((process.idx, process.proc_name.to_string()))
+                        .await
+                {
+                    let _ = reply.send(Err(anyhow::anyhow!(e)));
                     return Ok(());
                 }
 
