@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
-use axum::http::{Method, StatusCode, Uri, header};
+use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::routing::get;
 use rand::{Rng, distributions::Alphanumeric};
@@ -16,6 +16,7 @@ use tokio::time::{Duration, interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tower_http::cors::CorsLayer;
 
+use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
 
 #[derive(Clone)]
@@ -134,15 +135,106 @@ impl ExposingService {
                 return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                    .body("invalid query".into())
+                    .body(Body::from("invalid query"))
                     .unwrap();
             }
         };
 
+        let shared_logging = state.shared_logging.clone();
+
+        let (tx_stream, rx_stream) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
+
+        tokio::spawn(async move {
+            let (tx_logs, mut rx_logs) = mpsc::unbounded_channel::<LogChunk>();
+
+            let sub_id: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(5)
+                .map(char::from)
+                .collect();
+
+            let subscription = LoggingSubscriptionAction::Subscribe {
+                id: sub_id.clone(),
+                tx: tx_logs,
+                programs: params.0,
+                lines: params.1,
+            };
+
+            if shared_logging.send(subscription).await.is_err() {
+                let _ = tx_stream.send(Ok(Bytes::from_static(b"eof\n")));
+                return;
+            }
+
+            let mut ping = interval(Duration::from_secs(15));
+            ping.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = ping.tick() => {
+                        if tx_stream.send(Ok(Bytes::from_static(b"ping\n"))).is_err() {
+                            println!("client disconnected by ping, unsubscribing: {sub_id}");
+                            let _ = shared_logging
+                                .send(LoggingSubscriptionAction::Unsubscribe {
+                                    id: sub_id.clone(),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+
+                    maybe_chunk = rx_logs.recv() => {
+                        match maybe_chunk {
+                            Some(LogChunk::Line(line)) => {
+                                let mut out = line;
+                                if !out.ends_with('\n') {
+                                    out.push('\n');
+                                }
+
+                                if tx_stream.send(Ok(Bytes::from(out))).is_err() {
+                                    println!("client disconnected, unsubscribing: {sub_id}");
+                                    let _ = shared_logging
+                                        .send(LoggingSubscriptionAction::Unsubscribe {
+                                            id: sub_id.clone(),
+                                        })
+                                        .await;
+                                    return;
+                                }
+                            }
+                            Some(LogChunk::Eof) => {
+                                let _ = tx_stream.send(Ok(Bytes::from_static(b"eof\n")));
+                                let _ = shared_logging
+                                    .send(LoggingSubscriptionAction::Unsubscribe {
+                                        id: sub_id.clone(),
+                                    })
+                                    .await;
+                                return;
+                            }
+                            Some(LogChunk::Ping) => {}
+                            None => {
+                                println!("subscription source closed, unsubscribing: {sub_id}");
+                                let _ = shared_logging
+                                    .send(LoggingSubscriptionAction::Unsubscribe {
+                                        id: sub_id.clone(),
+                                    })
+                                    .await;
+
+                                let _ = tx_stream.send(Ok(Bytes::from_static(b"eof\n")));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let stream = UnboundedReceiverStream::new(rx_stream);
+        let body = Body::from_stream(stream);
+
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body("TEST OK".into())
+            .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+            .body(body)
             .unwrap()
     }
 
