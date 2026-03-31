@@ -1,12 +1,12 @@
 use tokio::sync::mpsc;
 
 use crate::logging::LogChunk;
+use std::collections::HashSet;
 
 pub struct LoggingSubscription {
     pub id: String,
     pub tx: mpsc::UnboundedSender<LogChunk>,
-    pub programs: Vec<String>,
-    pub lines: u64,
+    pub programs: HashSet<u64>,
 }
 
 pub enum LoggingSubscriptionAction {

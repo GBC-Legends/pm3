@@ -5,6 +5,7 @@ pub mod logging_subscription;
 use std::fmt::Display;
 use std::path::PathBuf;
 
+#[allow(unused)]
 pub struct ProcLogMeta {
     pub proc_name: String,
     pub stdout_path: PathBuf,
