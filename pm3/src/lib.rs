@@ -2,7 +2,10 @@ mod models;
 mod tcp_connector;
 mod utils;
 
+use crate::tcp_connector::delete::delete_program;
 use crate::tcp_connector::ping::ping_server;
+use crate::tcp_connector::reload::reload_program;
+use crate::tcp_connector::restart::restart_program;
 use crate::tcp_connector::start::start_program;
 use crate::tcp_connector::status::request_status;
 use crate::tcp_connector::stop::stop_program;
@@ -21,6 +24,9 @@ pub enum Commands {
     Ping,
     Start(StartArgs),
     Stop(StopArgs),
+    Restart(RestartArgs),
+    Reload(ReloadArgs),
+    Delete(DeleteArgs),
     Status,
     List,
     Ls,
@@ -46,6 +52,21 @@ pub struct StopArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct RestartArgs {
+    programs: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ReloadArgs {
+    programs: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DeleteArgs {
+    programs: Vec<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct LogsArgs {
     #[arg(long)]
     pub lines: Option<u64>,
@@ -65,6 +86,18 @@ pub fn process_commands(cmd: Commands) {
             }
         }
         Commands::Stop(args) => match stop_program(args.programs) {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("Error: {}", err),
+        },
+        Commands::Restart(args) => match restart_program(args.programs) {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("Error: {}", err),
+        },
+        Commands::Reload(args) => match reload_program(args.programs) {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("Error: {}", err),
+        },
+        Commands::Delete(args) => match delete_program(args.programs) {
             Ok(response) => println!("{}", response),
             Err(err) => println!("Error: {}", err),
         },
