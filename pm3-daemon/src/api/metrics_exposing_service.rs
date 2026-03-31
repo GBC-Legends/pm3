@@ -9,24 +9,35 @@ use axum::extract::{Path, State};
 use axum::http::{Method, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::routing::get;
+use rand::{Rng, distributions::Alphanumeric};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tower_http::cors::CorsLayer;
+
+use crate::logging::logging_subscription::LoggingSubscriptionAction;
 
 #[derive(Clone)]
 pub struct ExposingService {
     address: String,
     port: u16,
     db_path: PathBuf,
+    shared_logging: mpsc::Sender<LoggingSubscriptionAction>,
 }
 
 impl ExposingService {
-    pub fn init(address: impl Into<String>, port: u16, db_path: PathBuf) -> Self {
+    pub fn init(
+        address: impl Into<String>,
+        port: u16,
+        db_path: PathBuf,
+        shared_logging: mpsc::Sender<LoggingSubscriptionAction>,
+    ) -> Self {
         Self {
             address: address.into(),
             port,
             db_path,
+            shared_logging,
         }
     }
 
@@ -44,6 +55,7 @@ impl ExposingService {
                 "/api/v1/get_metrics_compressed/{external_id}",
                 get(Self::get_metrics_compressed),
             )
+            .route("/api/v1/subscribe_logs", get(Self::subscribe_logs))
             .layer(cors)
             .with_state(self.clone());
 
@@ -113,6 +125,52 @@ impl ExposingService {
                 .body(format!("join error: {}", err).into())
                 .unwrap(),
         }
+    }
+
+    async fn subscribe_logs(State(state): State<ExposingService>, uri: Uri) -> Response {
+        let params = match Self::parse_programs_and_line_from_query(uri.query().unwrap_or("")) {
+            Some(params) => params,
+            None => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body("invalid query".into())
+                    .unwrap();
+            }
+        };
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body("TEST OK".into())
+            .unwrap()
+    }
+
+    fn parse_programs_and_line_from_query(query: &str) -> Option<(Vec<String>, u64)> {
+        let mut programs: Vec<String> = Vec::new();
+        let mut lines: u64 = 15;
+
+        if query.is_empty() {
+            return Some((programs, lines));
+        }
+
+        for pair in query.split('&') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+
+            if key == "p" {
+                if value.parse::<u64>().is_ok() {
+                    programs.push(value.to_string());
+                }
+            } else if key == "lines" {
+                if let Ok(line) = value.parse::<u64>() {
+                    lines = line;
+                }
+            }
+        }
+
+        Some((programs, lines))
     }
 
     async fn get_metrics(

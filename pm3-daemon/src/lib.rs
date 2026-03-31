@@ -21,11 +21,15 @@ pub async fn start_application(public: bool) -> anyhow::Result<()> {
 
     let (logging_rx, logging_subs_tx, logging_subs_rx) = LoggingService::init();
 
-    let (mut pm3_runner, processes) = runner::ProcessRunner::init(logging_subs_tx);
+    let (mut pm3_runner, processes) = runner::ProcessRunner::init(logging_subs_tx.clone());
 
     let (metrics_rx, db_path) = MetricsService::init(processes);
-    let exposing_service =
-        ExposingService::init(&pm3_cfg.metrics_api_addr, pm3_cfg.metrics_api_port, db_path);
+    let exposing_service = ExposingService::init(
+        &pm3_cfg.metrics_api_addr,
+        pm3_cfg.metrics_api_port,
+        db_path,
+        logging_subs_tx.clone(),
+    );
 
     tokio::spawn(async move {
         LoggingService::dispatch(logging_rx, logging_subs_rx).await;
