@@ -11,8 +11,21 @@ pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()>
     let key = config.key();
     let process_names = get_process_names()?;
 
+    if programs.iter().any(|p| p == "all") {
+        if programs.len() > 1 {
+            eprintln!(
+                "{}",
+                "pm3: warning: 'all' overrides other program arguments".with(Color::Red)
+            );
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        programs.clear();
+    }
+
     if programs.is_empty() {
-        let all = send_secure_command("list programs")?;
+        let all = send_secure_command("list-programs")?;
         programs = all.split_whitespace().map(|s| s.to_string()).collect();
     }
 
