@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
@@ -348,6 +348,25 @@ impl LoggingService {
                             if total >= MAX_BUF_PER_PROC {
                                 Self::flush_proc(msg.idx, &mut buf_cache, &mut file_cache).await;
                             }
+
+                            let chunk = match msg.stream {
+                                StreamKind::Stdout => {
+                                    LogChunk::Line(format!("{} stdout {}", msg.idx, String::from_utf8_lossy(&msg.bytes)))
+                                }
+                                StreamKind::Stderr => {
+                                    LogChunk::Line(format!("{} stderr {}", msg.idx, String::from_utf8_lossy(&msg.bytes)))
+                                }
+                            };
+
+                            let subs = LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
+                                .await;
+
+                            for sub in subs.iter() {
+                                if sub.programs.contains(&msg.idx) {
+
+                                    let _ = sub.tx.send(chunk.clone()).ok();
+                                }
+                            }
                         }
                         None => {
                             Self::flush_all(&mut buf_cache, &mut file_cache).await;
@@ -363,6 +382,7 @@ impl LoggingService {
                     match sub {
                         LoggingSubscriptionAction::Subscribe { id, tx, programs, lines } => {
                             println!("Subscribtion: id={}, programs={:?}, lines={}", id, programs, lines);
+                            let mut programs_with_ids = HashSet::with_capacity(programs.len());
 
                             for program in &programs {
                                 let idx = match program.parse::<u64>() {
@@ -384,12 +404,15 @@ impl LoggingService {
                                 for line in err_lines.drain(..) {
                                     let _ = tx.send(LogChunk::Line(format!("{} stderr {}", idx, String::from_utf8_lossy(&line))));
                                 }
+
+                                programs_with_ids.insert(idx);
                             }
 
                             LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
-                                .await.push(LoggingSubscription { id, tx: tx.clone(), programs, lines });
+                                .await.push(LoggingSubscription { id, tx: tx.clone(), programs: programs_with_ids });
                         }
                         LoggingSubscriptionAction::Unsubscribe { id } => {
+                            println!("Unsubscribe: id={}", id);
                             LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
                                 .await.retain(|sub| sub.id != id);
                         }

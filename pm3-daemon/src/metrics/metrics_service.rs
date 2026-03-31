@@ -184,7 +184,7 @@ fn spawn_db_worker(db_path: &PathBuf, initial_processes: Vec<ProcessSeed>) -> mp
             let init_db = |conn: &Connection| -> Result<(), String> {
                 conn.execute_batch(
                     r#"
-                    PRAGMA journal_mode = WAL;
+                    PRAGMA journal_mode = DELETE;
                     PRAGMA synchronous = NORMAL;
                     PRAGMA temp_store = MEMORY;
                     PRAGMA busy_timeout = 5000;

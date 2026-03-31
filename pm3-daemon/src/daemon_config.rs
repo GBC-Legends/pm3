@@ -21,7 +21,7 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(public: bool) -> anyhow::Result<Self> {
         let port = Self::find_available_port_with_default(DEFAULT_PORT)?;
 
         // is expected to be stable for proper reverse_proxy
@@ -33,11 +33,17 @@ impl DaemonConfig {
         let mut key = [0u8; 32];
         OsRng.fill_bytes(&mut key);
 
+        let metrics_api_addr = if public {
+            "0.0.0.0".to_string()
+        } else {
+            "127.0.0.1".to_string()
+        };
+
         let result = Self {
             port,
             key_b64: URL_SAFE_NO_PAD.encode(key),
             metrics_api_port,
-            metrics_api_addr: "127.0.0.1".to_string(),
+            metrics_api_addr: metrics_api_addr,
         };
 
         result.dump()?;

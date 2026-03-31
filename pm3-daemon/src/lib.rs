@@ -16,8 +16,8 @@ use command_handler::tcp_listener::TcpCommandHandler;
 use process_runner::runner;
 use tokio::sync::mpsc;
 
-pub async fn start_application() -> anyhow::Result<()> {
-    let pm3_cfg = daemon_config::DaemonConfig::new()?;
+pub async fn start_application(public: bool) -> anyhow::Result<()> {
+    let pm3_cfg = daemon_config::DaemonConfig::new(public)?;
 
     let (logging_rx, logging_subs_tx, logging_subs_rx) = LoggingService::init();
 
