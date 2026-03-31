@@ -1,7 +1,11 @@
 use crate::command_handler::commands::RunnerCommand;
+use crate::logging::LogChunk;
+use crate::logging::logging_subscription::LoggingSubscriptionAction;
+use crate::metrics::metrics_service::MetricsService;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
 use anyhow::Result;
+use rand::{Rng, distributions::Alphanumeric};
 use std::sync::Arc;
 use sysinfo::System;
 use tokio::sync::mpsc;
@@ -9,24 +13,32 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
 pub struct ProcessRunner {
+    pub subs_sender: mpsc::Sender<LoggingSubscriptionAction>,
     pub processes: Vec<Arc<PmProcess>>,
 }
 
 impl ProcessRunner {
-    pub fn init() -> Self {
+    pub fn init(
+        subs_sender: mpsc::Sender<LoggingSubscriptionAction>,
+    ) -> (Self, Vec<(u64, String)>) {
         let mut slf = ProcessRunner {
+            subs_sender,
             processes: Vec::new(),
         };
+
+        let mut processes_metrics = Vec::new();
+
         use crate::utils::pm3_safe_cfg_handler;
 
         let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
         for cfg in configs_dir {
             let process = PmProcess::new(cfg, idx::alloc_id());
+            processes_metrics.push((process.idx, process.proc_name.to_string()));
             slf.processes.push(Arc::new(process));
         }
 
-        return slf;
+        return (slf, processes_metrics);
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -119,6 +131,14 @@ impl ProcessRunner {
                     return Ok(());
                 }
 
+                if let Err(e) =
+                    MetricsService::sync_new_process((process.idx, process.proc_name.to_string()))
+                        .await
+                {
+                    let _ = reply.send(Err(anyhow::anyhow!(e)));
+                    return Ok(());
+                }
+
                 let process_arc = Arc::new(process);
 
                 self.processes.push(process_arc);
@@ -190,6 +210,103 @@ impl ProcessRunner {
                 }
 
                 let _ = reply.send(Ok(out));
+                Ok(())
+            }
+            RunnerCommand::ListPrograms { reply } => {
+                let mut out = Vec::new();
+                for process in &self.processes {
+                    let p_handle = process.clone();
+                    out.push(format!("{} {}", p_handle.idx, p_handle.proc_name));
+                }
+                let _ = reply.send(Ok(out.join(" ")));
+                Ok(())
+            }
+            RunnerCommand::Logs {
+                stream,
+                lines,
+                programs,
+            } => {
+                let shared_sender = self.subs_sender.clone();
+
+                tokio::spawn(async move {
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+
+                    let sub_id: String = rand::thread_rng()
+                        .sample_iter(&Alphanumeric)
+                        .take(5)
+                        .map(char::from)
+                        .collect();
+
+                    let subscription = LoggingSubscriptionAction::Subscribe {
+                        id: sub_id.clone(),
+                        tx,
+                        programs,
+                        lines,
+                    };
+
+                    if shared_sender.send(subscription).await.is_err() {
+                        let _ = stream.send(Ok(LogChunk::Eof));
+                        return;
+                    }
+
+                    let mut ping = interval(Duration::from_secs(15));
+
+                    ping.tick().await;
+
+                    loop {
+                        tokio::select! {
+                            _ = ping.tick() => {
+                                if stream.send(Ok(LogChunk::Ping)).is_err() {
+                                    println!("client disconnected by ping, unsubscribing: {sub_id}");
+                                    let _ = shared_sender
+                                        .send(LoggingSubscriptionAction::Unsubscribe {
+                                            id: sub_id.clone(),
+                                        })
+                                        .await;
+                                    return;
+                                }
+                            }
+
+                            maybe_chunk = rx.recv() => {
+                                match maybe_chunk {
+                                    Some(LogChunk::Line(line)) => {
+                                        if stream.send(Ok(LogChunk::Line(line))).is_err() {
+                                            println!("client disconnected, unsubscribing: {sub_id}");
+                                            let _ = shared_sender
+                                                .send(LoggingSubscriptionAction::Unsubscribe {
+                                                    id: sub_id.clone(),
+                                                })
+                                                .await;
+                                            return;
+                                        }
+                                    }
+                                    Some(LogChunk::Eof) => {
+                                        let _ = stream.send(Ok(LogChunk::Eof));
+                                        let _ = shared_sender
+                                            .send(LoggingSubscriptionAction::Unsubscribe {
+                                                id: sub_id.clone(),
+                                            })
+                                            .await;
+                                        return;
+                                    },
+                                    Some(LogChunk::Ping) => {},
+                                    None => {
+                                        println!("subscription source closed, unsubscribing: {sub_id}");
+                                        let _ = shared_sender
+                                            .send(LoggingSubscriptionAction::Unsubscribe {
+                                                id: sub_id.clone(),
+                                            })
+                                            .await;
+
+                                        let _ = stream.send(Ok(LogChunk::Eof));
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
                 Ok(())
             }
         }

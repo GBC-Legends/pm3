@@ -1,5 +1,5 @@
 use crate::utils::start_helpers;
-use std::io::{BufRead, BufReader, Result, Write};
+use std::io::{Error, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -92,26 +92,17 @@ pub fn start_program(
 
     let exec_dir = match std::env::current_dir() {
         Ok(c) => c,
-        Err(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to get current directory",
+        Err(e) => {
+            return Err(Error::new(
+                e.kind(),
+                format!("pm3: failed to get current directory: {}", e),
             ));
         }
     };
 
     let new_process = NewProcessConfig::new(proc_name, exec_dir, exec_name, exec_args);
 
-    let msg = format!("start {}\n", new_process.to_url_encoded());
-
-    let mut stream = crate::tcp_connector::init_stream()?;
-    stream.write_all(msg.as_bytes())?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    println!("resp={response}");
-
-    Ok(response)
+    let plaintext = format!("start {}", new_process.to_url_encoded());
+    let reply = crate::tcp_connector::send_secure_command(&plaintext)?;
+    Ok(reply)
 }

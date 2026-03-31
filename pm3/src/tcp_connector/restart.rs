@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind, Result};
 
 use crate::tcp_connector::send_secure_command;
 
-pub fn stop_program(programs: Vec<String>) -> Result<String> {
+pub fn restart_program(programs: Vec<String>) -> Result<String> {
     if programs.is_empty() {
         return Err(Error::new(ErrorKind::InvalidInput, "no programs specified"));
     }
@@ -32,7 +32,7 @@ pub fn stop_program(programs: Vec<String>) -> Result<String> {
         return Err(Error::new(ErrorKind::InvalidInput, "no programs found"));
     }
 
-    let plaintext = format!("stop {}", targets.join(" "));
+    let plaintext = format!("restart {}", targets.join(" "));
     let reply = send_secure_command(&plaintext)?;
 
     Ok(reply)

@@ -1,6 +1,13 @@
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
+use crate::logging::LogChunk;
 use crate::models::pm3_config::PmProcessConfig;
+
+pub enum CmdReply {
+    One(String),
+    Stream(mpsc::UnboundedReceiver<anyhow::Result<LogChunk>>),
+}
 
 #[derive(Debug)]
 pub enum RunnerCommand {
@@ -17,5 +24,13 @@ pub enum RunnerCommand {
     },
     List {
         reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    ListPrograms {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    Logs {
+        lines: u64,
+        programs: Vec<String>,
+        stream: mpsc::UnboundedSender<anyhow::Result<LogChunk>>,
     },
 }

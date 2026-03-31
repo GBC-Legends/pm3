@@ -5,3 +5,16 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+tabled = "0.20.0"
+memchr = "2"
+chacha20poly1305 = "0.10"
+rand_core = "0.6"
+base64 = "0.22"
+ratatui = "0.30.0"
+crossterm = "0.29.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
