@@ -15,9 +15,11 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
+use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
 
 #[derive(Clone)]
 pub struct ExposingService {
@@ -48,6 +50,8 @@ impl ExposingService {
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers(tower_http::cors::Any);
 
+        let dashboard_path = pm3_home_dir_safe().join("dashboard/");
+
         let app = Router::new()
             .route("/api/v1/healthz", get(Self::healthz))
             .route("/api/v1/list", get(Self::list))
@@ -57,6 +61,8 @@ impl ExposingService {
                 get(Self::get_metrics_compressed),
             )
             .route("/api/v1/subscribe_logs", get(Self::subscribe_logs))
+            // Serve the dashboard from the dashboard_path directory
+            .nest_service("/dash", ServeDir::new(dashboard_path))
             .layer(cors)
             .with_state(self.clone());
 
