@@ -102,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.bundle_name }}-binaries
-          path: artifact-bin/*
+          path: artifact-bin
 
   package:
     needs: [build_dashboard, build_binaries]
@@ -146,15 +146,15 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           pwd
-          find binaries -maxdepth 3 -type f
-          find dashboard-dist -maxdepth 3 -type f
+          find binaries -maxdepth 4
+          find dashboard-dist -maxdepth 4
 
       - name: Prepare bundle (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
           mkdir -p bundle/dashboard
-          cp binaries/${{ matrix.pm3_bin }} bundle/
-          cp binaries/${{ matrix.daemon_bin }} bundle/
+          cp binaries/artifact-bin/${{ matrix.pm3_bin }} bundle/
+          cp binaries/artifact-bin/${{ matrix.daemon_bin }} bundle/
           cp -r dashboard-dist/. bundle/dashboard/
           cd bundle
           tar -czf ../${{ matrix.bundle_name }}.${{ matrix.archive_ext }} .
@@ -165,8 +165,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force bundle | Out-Null
           New-Item -ItemType Directory -Force bundle\dashboard | Out-Null
-          Copy-Item "binaries\${{ matrix.pm3_bin }}" bundle\
-          Copy-Item "binaries\${{ matrix.daemon_bin }}" bundle\
+          Copy-Item "binaries\artifact-bin\${{ matrix.pm3_bin }}" bundle\
+          Copy-Item "binaries\artifact-bin\${{ matrix.daemon_bin }}" bundle\
           Copy-Item "dashboard-dist\*" bundle\dashboard\ -Recurse -Force
           Compress-Archive -Path bundle\* -DestinationPath "${{ matrix.bundle_name }}.${{ matrix.archive_ext }}"
 
