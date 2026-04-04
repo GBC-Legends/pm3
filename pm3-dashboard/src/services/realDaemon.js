@@ -1,22 +1,22 @@
-import { decompress } from 'fzstd';
+import { decompress } from "fzstd";
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_BASE = import.meta.env.VITE_API_URL || "/api/v1/";
 
 let processCache = [];
 let logId = 1;
 
 function parseListResponse(text) {
   return text
-    .split('\n')
-    .map(line => line.trim())
+    .split("\n")
+    .map((line) => line.trim())
     .filter(Boolean)
-    .map(line => {
+    .map((line) => {
       const match = line.match(/^(\d+):\s*(.+)$/);
       if (!match) return null;
       return {
         id: parseInt(match[1], 10),
         name: match[2].trim(),
-        status: 'running',
+        status: "running",
         pid: null,
         cpu: 0,
         ram: 0,
@@ -40,8 +40,13 @@ function parseCompressedMetrics(buffer) {
   // Header: 4 bytes magic "PM3M" + 1 byte version + 1 byte record size
   if (decompressed.length < 6) return null;
 
-  const magic = String.fromCharCode(decompressed[0], decompressed[1], decompressed[2], decompressed[3]);
-  if (magic !== 'PM3M') return null;
+  const magic = String.fromCharCode(
+    decompressed[0],
+    decompressed[1],
+    decompressed[2],
+    decompressed[3],
+  );
+  if (magic !== "PM3M") return null;
 
   const recordSize = decompressed[5];
   if (recordSize < 14) return null;
@@ -54,7 +59,11 @@ function parseCompressedMetrics(buffer) {
 
   // Read the last record for current values
   const lastOffset = dataStart + (recordCount - 1) * recordSize;
-  const view = new DataView(decompressed.buffer, decompressed.byteOffset + lastOffset, recordSize);
+  const view = new DataView(
+    decompressed.buffer,
+    decompressed.byteOffset + lastOffset,
+    recordSize,
+  );
 
   const timestamp = view.getUint32(0, true);
   const cpuPermille = view.getUint16(8, true);
@@ -62,8 +71,8 @@ function parseCompressedMetrics(buffer) {
 
   return {
     timestamp,
-    cpu: cpuPermille / 10,   // permille -> percentage
-    ram: ramKB / 1024,        // KB -> MB
+    cpu: cpuPermille / 10, // permille -> percentage
+    ram: ramKB / 1024, // KB -> MB
   };
 }
 
@@ -78,8 +87,13 @@ function parseCompressedMetricsHistory(buffer) {
 
   if (decompressed.length < 6) return [];
 
-  const magic = String.fromCharCode(decompressed[0], decompressed[1], decompressed[2], decompressed[3]);
-  if (magic !== 'PM3M') return [];
+  const magic = String.fromCharCode(
+    decompressed[0],
+    decompressed[1],
+    decompressed[2],
+    decompressed[3],
+  );
+  if (magic !== "PM3M") return [];
 
   const recordSize = decompressed[5];
   if (recordSize < 14) return [];
@@ -91,7 +105,11 @@ function parseCompressedMetricsHistory(buffer) {
   const records = [];
   for (let i = 0; i < recordCount; i++) {
     const offset = dataStart + i * recordSize;
-    const view = new DataView(decompressed.buffer, decompressed.byteOffset + offset, recordSize);
+    const view = new DataView(
+      decompressed.buffer,
+      decompressed.byteOffset + offset,
+      recordSize,
+    );
     records.push({
       timestamp: view.getUint32(0, true),
       cpu: view.getUint16(8, true) / 10,
@@ -107,7 +125,7 @@ export const realDaemon = {
     try {
       const res = await fetch(`${API_BASE}healthz`);
       const text = await res.text();
-      return text.trim() === 'ok';
+      return text.trim() === "ok";
     } catch {
       return false;
     }
@@ -121,7 +139,7 @@ export const realDaemon = {
       processCache = parseListResponse(text);
       return [...processCache];
     } catch (err) {
-      console.error('Failed to fetch process list:', err);
+      console.error("Failed to fetch process list:", err);
       return [...processCache]; // return cached if available
     }
   },
@@ -138,7 +156,7 @@ export const realDaemon = {
       processCache.map(async (proc) => {
         try {
           const res = await fetch(
-            `${API_BASE}get_metrics_compressed/${proc.id}?since=${since}`
+            `${API_BASE}get_metrics_compressed/${proc.id}?since=${since}`,
           );
           if (!res.ok) return;
           const buffer = await res.arrayBuffer();
@@ -149,7 +167,7 @@ export const realDaemon = {
         } catch {
           // skip this process's metrics
         }
-      })
+      }),
     );
 
     return results;
@@ -188,7 +206,7 @@ export const realDaemon = {
         await this.getProcesses();
       }
 
-      const params = processCache.map(p => `p=${p.id}`).join('&');
+      const params = processCache.map((p) => `p=${p.id}`).join("&");
       const url = `${API_BASE}subscribe_logs?${params}&lines=50`;
       try {
         const res = await fetch(url, { signal: controller.signal });
@@ -196,15 +214,15 @@ export const realDaemon = {
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
+        let buffer = "";
 
         while (active) {
           const { done, value } = await reader.read();
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // keep incomplete last line
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // keep incomplete last line
 
           for (const line of lines) {
             if (!line.trim()) continue;
@@ -213,8 +231,8 @@ export const realDaemon = {
           }
         }
       } catch (err) {
-        if (err.name !== 'AbortError') {
-          console.error('Log stream error:', err);
+        if (err.name !== "AbortError") {
+          console.error("Log stream error:", err);
           // Reconnect after delay if still active
           if (active) {
             setTimeout(startStream, 3000);
@@ -233,13 +251,13 @@ export const realDaemon = {
       const stream = match[2];
       const message = match[3];
 
-      const proc = processCache.find(p => p.id === processId);
+      const proc = processCache.find((p) => p.id === processId);
 
       return {
         id: logId++,
-        timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+        timestamp: new Date().toLocaleTimeString("en-US", { hour12: false }),
         process: proc ? proc.name : `process-${processId}`,
-        level: stream === 'stderr' ? 'ERROR' : 'INFO',
+        level: stream === "stderr" ? "ERROR" : "INFO",
         message,
       };
     }
@@ -254,18 +272,18 @@ export const realDaemon = {
 
   // Process management — not supported by daemon yet
   startProcess() {
-    return Promise.reject(new Error('Not supported by daemon'));
+    return Promise.reject(new Error("Not supported by daemon"));
   },
   stopProcess() {
-    return Promise.reject(new Error('Not supported by daemon'));
+    return Promise.reject(new Error("Not supported by daemon"));
   },
   restartProcess() {
-    return Promise.reject(new Error('Not supported by daemon'));
+    return Promise.reject(new Error("Not supported by daemon"));
   },
   deleteProcess() {
-    return Promise.reject(new Error('Not supported by daemon'));
+    return Promise.reject(new Error("Not supported by daemon"));
   },
   addProcess() {
-    return Promise.reject(new Error('Not supported by daemon'));
+    return Promise.reject(new Error("Not supported by daemon"));
   },
 };
