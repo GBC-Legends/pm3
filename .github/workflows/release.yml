@@ -187,12 +187,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download all release archives
+      - name: Download final release archives only
         uses: actions/download-artifact@v4
         with:
+          pattern: "*-release"
           path: dist
+          merge-multiple: true
+
+      - name: Show files to publish
+        run: |
+          find dist -maxdepth 2 -type f
 
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          files: dist/*
