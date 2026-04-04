@@ -142,19 +142,25 @@ jobs:
           name: ${{ matrix.bundle_name }}-binaries
           path: binaries
 
-      - name: Show downloaded files (debug)
+      - name: Show downloaded files (Linux/macOS debug)
         if: runner.os != 'Windows'
         run: |
-          pwd
-          find binaries -maxdepth 4
-          find dashboard-dist -maxdepth 4
+          find binaries -maxdepth 3
+          find dashboard-dist -maxdepth 3
+
+      - name: Show downloaded files (Windows debug)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem binaries -Recurse
+          Get-ChildItem dashboard-dist -Recurse
 
       - name: Prepare bundle (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
           mkdir -p bundle/dashboard
-          cp binaries/artifact-bin/${{ matrix.pm3_bin }} bundle/
-          cp binaries/artifact-bin/${{ matrix.daemon_bin }} bundle/
+          cp binaries/${{ matrix.pm3_bin }} bundle/
+          cp binaries/${{ matrix.daemon_bin }} bundle/
           cp -r dashboard-dist/. bundle/dashboard/
           cd bundle
           tar -czf ../${{ matrix.bundle_name }}.${{ matrix.archive_ext }} .
@@ -165,8 +171,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force bundle | Out-Null
           New-Item -ItemType Directory -Force bundle\dashboard | Out-Null
-          Copy-Item "binaries\artifact-bin\${{ matrix.pm3_bin }}" bundle\
-          Copy-Item "binaries\artifact-bin\${{ matrix.daemon_bin }}" bundle\
+          Copy-Item "binaries\${{ matrix.pm3_bin }}" bundle\
+          Copy-Item "binaries\${{ matrix.daemon_bin }}" bundle\
           Copy-Item "dashboard-dist\*" bundle\dashboard\ -Recurse -Force
           Compress-Archive -Path bundle\* -DestinationPath "${{ matrix.bundle_name }}.${{ matrix.archive_ext }}"
 
