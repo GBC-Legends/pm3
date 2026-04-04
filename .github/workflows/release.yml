@@ -83,13 +83,26 @@ jobs:
         working-directory: ./pm3-daemon
         run: cargo build --release
 
+      - name: Prepare binary artifact (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p artifact-bin
+          cp pm3/target/release/${{ matrix.pm3_bin }} artifact-bin/
+          cp pm3-daemon/target/release/${{ matrix.daemon_bin }} artifact-bin/
+
+      - name: Prepare binary artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact-bin | Out-Null
+          Copy-Item "pm3\target\release\${{ matrix.pm3_bin }}" artifact-bin\
+          Copy-Item "pm3-daemon\target\release\${{ matrix.daemon_bin }}" artifact-bin\
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.bundle_name }}-binaries
-          path: |
-            pm3/target/release/${{ matrix.pm3_bin }}
-            pm3-daemon/target/release/${{ matrix.daemon_bin }}
+          path: artifact-bin/*
 
   package:
     needs: [build_dashboard, build_binaries]
@@ -128,6 +141,13 @@ jobs:
         with:
           name: ${{ matrix.bundle_name }}-binaries
           path: binaries
+
+      - name: Show downloaded files (debug)
+        if: runner.os != 'Windows'
+        run: |
+          pwd
+          find binaries -maxdepth 3 -type f
+          find dashboard-dist -maxdepth 3 -type f
 
       - name: Prepare bundle (Linux/macOS)
         if: runner.os != 'Windows'
