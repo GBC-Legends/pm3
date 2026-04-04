@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: pm3-dashboard/package-lock.json
+
+      - name: Install dashboard dependencies
+        working-directory: ./pm3-dashboard
+        run: npm ci
+
+      - name: Build dashboard
+        working-directory: ./pm3-dashboard
+        run: npm run build
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: pm3-dashboard/dist
+
+  build_binaries:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundle_name: pm3-linux-x86_64
+            pm3_bin: pm3
+            daemon_bin: pm3-daemon
+            archive_ext: tar.gz
+
+          - os: windows-latest
+            bundle_name: pm3-windows-x86_64
+            pm3_bin: pm3.exe
+            daemon_bin: pm3-daemon.exe
+            archive_ext: zip
+
+          - os: macos-latest
+            bundle_name: pm3-macos-x86_64
+            pm3_bin: pm3
+            daemon_bin: pm3-daemon
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build pm3
+        working-directory: ./pm3
+        run: cargo build --release
+
+      - name: Build pm3-daemon
+        working-directory: ./pm3-daemon
+        run: cargo build --release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bundle_name }}-binaries
+          path: |
+            pm3/target/release/${{ matrix.pm3_bin }}
+            pm3-daemon/target/release/${{ matrix.daemon_bin }}
+
+  package:
+    needs: [build_dashboard, build_binaries]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundle_name: pm3-linux-x86_64
+            pm3_bin: pm3
+            daemon_bin: pm3-daemon
+            archive_ext: tar.gz
+
+          - os: windows-latest
+            bundle_name: pm3-windows-x86_64
+            pm3_bin: pm3.exe
+            daemon_bin: pm3-daemon.exe
+            archive_ext: zip
+
+          - os: macos-latest
+            bundle_name: pm3-macos-x86_64
+            pm3_bin: pm3
+            daemon_bin: pm3-daemon
+            archive_ext: tar.gz
+
+    steps:
+      - name: Download dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard-dist
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.bundle_name }}-binaries
+          path: binaries
+
+      - name: Prepare bundle (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p bundle/dashboard
+          cp binaries/${{ matrix.pm3_bin }} bundle/
+          cp binaries/${{ matrix.daemon_bin }} bundle/
+          cp -r dashboard-dist/. bundle/dashboard/
+          cd bundle
+          tar -czf ../${{ matrix.bundle_name }}.${{ matrix.archive_ext }} .
+
+      - name: Prepare bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          New-Item -ItemType Directory -Force bundle\dashboard | Out-Null
+          Copy-Item "binaries\${{ matrix.pm3_bin }}" bundle\
+          Copy-Item "binaries\${{ matrix.daemon_bin }}" bundle\
+          Copy-Item "dashboard-dist\*" bundle\dashboard\ -Recurse -Force
+          Compress-Archive -Path bundle\* -DestinationPath "${{ matrix.bundle_name }}.${{ matrix.archive_ext }}"
+
+      - name: Upload final archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bundle_name }}-release
+          path: ${{ matrix.bundle_name }}.${{ matrix.archive_ext }}
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all release archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
