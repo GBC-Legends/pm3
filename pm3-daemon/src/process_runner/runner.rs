@@ -22,22 +22,12 @@ impl ProcessRunner {
     pub fn init(
         subs_sender: mpsc::Sender<LoggingSubscriptionAction>,
     ) -> (Self, Vec<(u64, String)>) {
-        let mut slf = ProcessRunner {
+        let slf = ProcessRunner {
             subs_sender,
             processes: Vec::new(),
         };
 
-        let mut processes_metrics = Vec::new();
-
-        use crate::utils::pm3_safe_cfg_handler;
-
-        let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
-
-        for cfg in configs_dir {
-            let process = PmProcess::new(cfg, idx::alloc_id());
-            processes_metrics.push((process.idx, process.proc_name.to_string()));
-            slf.processes.push(Arc::new(process));
-        }
+        let processes_metrics = Vec::new();
 
         return (slf, processes_metrics);
     }
@@ -409,7 +399,6 @@ impl ProcessRunner {
                 let _ = reply.send(msg);
                 Ok(())
             }
-
             RunnerCommand::Dump { reply } => {
                 let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
                 let configs_dir = pm3_home_dir.join("configs");
@@ -439,6 +428,33 @@ impl ProcessRunner {
                 .await;
 
                 let _ = reply.send(result);
+                Ok(())
+            }
+            RunnerCommand::Revive { reply } => {
+                if !self.processes.is_empty() {
+                    for proc in self.processes.iter() {
+                        proc.stop().await?;
+                    }
+
+                    self.processes.clear();
+                }
+
+                let mut cnt = 0;
+                use crate::utils::pm3_safe_cfg_handler;
+
+                let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
+
+                for cfg in configs_dir {
+                    let process = PmProcess::new(cfg, idx::alloc_id());
+                    MetricsService::sync_new_process((process.idx, process.proc_name.to_string()))
+                        .await?;
+                    self.processes.push(Arc::new(process));
+                    cnt += 1;
+                }
+                self.run().await?;
+
+                let msg = format!("PM3 has started {} processes from ~/.pm3/configs", cnt);
+                let _ = reply.send(Ok(msg));
                 Ok(())
             }
         }

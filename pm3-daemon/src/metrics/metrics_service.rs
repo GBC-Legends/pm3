@@ -80,7 +80,7 @@ impl MetricsService {
             .clone()
     }
 
-    pub async fn sync_new_process(process: (u64, String)) -> Result<(), String> {
+    pub async fn sync_new_process(process: (u64, String)) -> anyhow::Result<(), anyhow::Error> {
         let db_tx = GLOBAL_DB_TX
             .get()
             .expect("MetricsService::init() not called");
@@ -88,7 +88,7 @@ impl MetricsService {
         db_tx
             .send(DbMsg::SyncNewProcess(process))
             .await
-            .map_err(|e| format!("failed to send SyncProcesses to db worker: {}", e))
+            .map_err(|e| anyhow::anyhow!("failed to send SyncProcesses to db worker: {}", e))
     }
 
     pub async fn dispatch(mut rx: mpsc::Receiver<MetricsLog>) {

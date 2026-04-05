@@ -48,4 +48,7 @@ pub enum RunnerCommand {
     Dump {
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
+    Revive {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }
