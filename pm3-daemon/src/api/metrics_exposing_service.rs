@@ -6,27 +6,41 @@ use std::path::PathBuf;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
-use axum::http::{Method, StatusCode, Uri, header};
+use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::routing::get;
+use rand::{Rng, distributions::Alphanumeric};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
+
+use crate::logging::LogChunk;
+use crate::logging::logging_subscription::LoggingSubscriptionAction;
+use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
 
 #[derive(Clone)]
 pub struct ExposingService {
     address: String,
     port: u16,
     db_path: PathBuf,
+    shared_logging: mpsc::Sender<LoggingSubscriptionAction>,
 }
 
 impl ExposingService {
-    pub fn init(address: impl Into<String>, port: u16, db_path: PathBuf) -> Self {
+    pub fn init(
+        address: impl Into<String>,
+        port: u16,
+        db_path: PathBuf,
+        shared_logging: mpsc::Sender<LoggingSubscriptionAction>,
+    ) -> Self {
         Self {
             address: address.into(),
             port,
             db_path,
+            shared_logging,
         }
     }
 
@@ -36,6 +50,8 @@ impl ExposingService {
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers(tower_http::cors::Any);
 
+        let dashboard_path = pm3_home_dir_safe().join("dashboard/");
+
         let app = Router::new()
             .route("/api/v1/healthz", get(Self::healthz))
             .route("/api/v1/list", get(Self::list))
@@ -44,6 +60,9 @@ impl ExposingService {
                 "/api/v1/get_metrics_compressed/{external_id}",
                 get(Self::get_metrics_compressed),
             )
+            .route("/api/v1/subscribe_logs", get(Self::subscribe_logs))
+            // Serve the dashboard from the dashboard_path directory
+            .nest_service("/dash", ServeDir::new(dashboard_path))
             .layer(cors)
             .with_state(self.clone());
 
@@ -113,6 +132,143 @@ impl ExposingService {
                 .body(format!("join error: {}", err).into())
                 .unwrap(),
         }
+    }
+
+    async fn subscribe_logs(State(state): State<ExposingService>, uri: Uri) -> Response {
+        let params = match Self::parse_programs_and_line_from_query(uri.query().unwrap_or("")) {
+            Some(params) => params,
+            None => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(Body::from("invalid query"))
+                    .unwrap();
+            }
+        };
+
+        let shared_logging = state.shared_logging.clone();
+
+        let (tx_stream, rx_stream) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
+
+        tokio::spawn(async move {
+            let (tx_logs, mut rx_logs) = mpsc::unbounded_channel::<LogChunk>();
+
+            let sub_id: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(5)
+                .map(char::from)
+                .collect();
+
+            let subscription = LoggingSubscriptionAction::Subscribe {
+                id: sub_id.clone(),
+                tx: tx_logs,
+                programs: params.0,
+                lines: params.1,
+            };
+
+            if shared_logging.send(subscription).await.is_err() {
+                let _ = tx_stream.send(Ok(Bytes::from_static(b"eof\n")));
+                return;
+            }
+
+            let mut ping = interval(Duration::from_secs(15));
+            ping.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = ping.tick() => {
+                        if tx_stream.send(Ok(Bytes::from_static(b"ping\n"))).is_err() {
+                            println!("client disconnected by ping, unsubscribing: {sub_id}");
+                            let _ = shared_logging
+                                .send(LoggingSubscriptionAction::Unsubscribe {
+                                    id: sub_id.clone(),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+
+                    maybe_chunk = rx_logs.recv() => {
+                        match maybe_chunk {
+                            Some(LogChunk::Line(line)) => {
+                                let mut out = line;
+                                if !out.ends_with('\n') {
+                                    out.push('\n');
+                                }
+
+                                if tx_stream.send(Ok(Bytes::from(out))).is_err() {
+                                    println!("client disconnected, unsubscribing: {sub_id}");
+                                    let _ = shared_logging
+                                        .send(LoggingSubscriptionAction::Unsubscribe {
+                                            id: sub_id.clone(),
+                                        })
+                                        .await;
+                                    return;
+                                }
+                            }
+                            Some(LogChunk::Eof) => {
+                                let _ = tx_stream.send(Ok(Bytes::from_static(b"eof\n")));
+                                let _ = shared_logging
+                                    .send(LoggingSubscriptionAction::Unsubscribe {
+                                        id: sub_id.clone(),
+                                    })
+                                    .await;
+                                return;
+                            }
+                            Some(LogChunk::Ping) => {}
+                            None => {
+                                println!("subscription source closed, unsubscribing: {sub_id}");
+                                let _ = shared_logging
+                                    .send(LoggingSubscriptionAction::Unsubscribe {
+                                        id: sub_id.clone(),
+                                    })
+                                    .await;
+
+                                let _ = tx_stream.send(Ok(Bytes::from_static(b"eof\n")));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let stream = UnboundedReceiverStream::new(rx_stream);
+        let body = Body::from_stream(stream);
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+            .body(body)
+            .unwrap()
+    }
+
+    fn parse_programs_and_line_from_query(query: &str) -> Option<(Vec<String>, u64)> {
+        let mut programs: Vec<String> = Vec::new();
+        let mut lines: u64 = 15;
+
+        if query.is_empty() {
+            return Some((programs, lines));
+        }
+
+        for pair in query.split('&') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+
+            if key == "p" {
+                if value.parse::<u64>().is_ok() {
+                    programs.push(value.to_string());
+                }
+            } else if key == "lines" {
+                if let Ok(line) = value.parse::<u64>() {
+                    lines = line;
+                }
+            }
+        }
+
+        Some((programs, lines))
     }
 
     async fn get_metrics(
