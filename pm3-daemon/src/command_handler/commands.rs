@@ -41,4 +41,14 @@ pub enum RunnerCommand {
         programs: Vec<String>,
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
+    Flush {
+        programs: Vec<String>,
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    Dump {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    Revive {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }

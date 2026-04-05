@@ -4,11 +4,12 @@ use crate::logging::logging_subscription::LoggingSubscriptionAction;
 use crate::metrics::metrics_service::MetricsService;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
+use crate::utils::pm3_safe_dir;
 use anyhow::Result;
 use rand::{Rng, distributions::Alphanumeric};
 use std::sync::Arc;
 use sysinfo::System;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
@@ -21,22 +22,12 @@ impl ProcessRunner {
     pub fn init(
         subs_sender: mpsc::Sender<LoggingSubscriptionAction>,
     ) -> (Self, Vec<(u64, String)>) {
-        let mut slf = ProcessRunner {
+        let slf = ProcessRunner {
             subs_sender,
             processes: Vec::new(),
         };
 
-        let mut processes_metrics = Vec::new();
-
-        use crate::utils::pm3_safe_cfg_handler;
-
-        let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
-
-        for cfg in configs_dir {
-            let process = PmProcess::new(cfg, idx::alloc_id());
-            processes_metrics.push((process.idx, process.proc_name.to_string()));
-            slf.processes.push(Arc::new(process));
-        }
+        let processes_metrics = Vec::new();
 
         return (slf, processes_metrics);
     }
@@ -91,7 +82,7 @@ impl ProcessRunner {
                         break;
                     };
 
-                    if let Err(e) = self.handle_command(cmd).await {
+                    if let Err(e) = self.handle_command(cmd, &mut sys).await {
                         eprintln!("[pm3] handle_command error: {e:?}");
                     }
                 }
@@ -99,7 +90,11 @@ impl ProcessRunner {
         }
     }
 
-    async fn handle_command(&mut self, cmd: RunnerCommand) -> anyhow::Result<()> {
+    async fn handle_command(
+        &mut self,
+        cmd: RunnerCommand,
+        system: &mut System,
+    ) -> anyhow::Result<()> {
         match cmd {
             RunnerCommand::Ping { reply } => {
                 let _ = reply.send(Ok("pong".to_string()));
@@ -187,12 +182,10 @@ impl ProcessRunner {
                 Ok(())
             }
             RunnerCommand::List { reply } => {
-                let mut system = System::new();
-
                 let mut lines: Vec<String> = Vec::with_capacity(self.processes.len());
 
                 for process in &self.processes {
-                    match process.get_current_status(&mut system).await {
+                    match process.get_current_status(system).await {
                         Ok(info) => lines.push(info.to_qs_line()),
                         Err(e) => {
                             lines.push(format!("status=error&msg={}", e));
@@ -381,6 +374,86 @@ impl ProcessRunner {
                     format!("Deleted {} successfully", finished.join(", "))
                 };
 
+                let _ = reply.send(Ok(msg));
+                Ok(())
+            }
+            RunnerCommand::Flush { programs, reply } => {
+                let (oneshot_tx, oneshot_rx) = oneshot::channel();
+                let shared_sender = self.subs_sender.clone();
+
+                let sub_id: String = rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(5)
+                    .map(char::from)
+                    .collect();
+
+                let sub = LoggingSubscriptionAction::Truncate {
+                    id: sub_id,
+                    programs,
+                    oneshot_tx,
+                };
+
+                let _ = shared_sender.send(sub);
+
+                let msg = oneshot_rx.await?;
+                let _ = reply.send(msg);
+                Ok(())
+            }
+            RunnerCommand::Dump { reply } => {
+                let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
+                let configs_dir = pm3_home_dir.join("configs");
+                let configs_old_dir = pm3_home_dir.join("configs.old");
+                let mut cnt = 0;
+
+                let result: anyhow::Result<String> = async {
+                    if tokio::fs::try_exists(&configs_old_dir).await? {
+                        tokio::fs::remove_dir_all(&configs_old_dir).await?;
+                    }
+
+                    if tokio::fs::try_exists(&configs_dir).await? {
+                        tokio::fs::rename(&configs_dir, &configs_old_dir).await?;
+                    }
+
+                    tokio::fs::create_dir_all(&configs_dir).await?;
+                    for proc in &self.processes {
+                        proc.dump_config().await?;
+                        cnt += 1;
+                    }
+
+                    Ok(format!(
+                        "{} configs saved to ~/.pm3/configs (backup created in ~/.pm3/configs.old)",
+                        cnt
+                    ))
+                }
+                .await;
+
+                let _ = reply.send(result);
+                Ok(())
+            }
+            RunnerCommand::Revive { reply } => {
+                if !self.processes.is_empty() {
+                    for proc in self.processes.iter() {
+                        proc.stop().await?;
+                    }
+
+                    self.processes.clear();
+                }
+
+                let mut cnt = 0;
+                use crate::utils::pm3_safe_cfg_handler;
+
+                let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
+
+                for cfg in configs_dir {
+                    let process = PmProcess::new(cfg, idx::alloc_id());
+                    MetricsService::sync_new_process((process.idx, process.proc_name.to_string()))
+                        .await?;
+                    self.processes.push(Arc::new(process));
+                    cnt += 1;
+                }
+                self.run().await?;
+
+                let msg = format!("PM3 has started {} processes from ~/.pm3/configs", cnt);
                 let _ = reply.send(Ok(msg));
                 Ok(())
             }

@@ -416,6 +416,48 @@ impl LoggingService {
                             LOGS_SUBSCRIPTIONS.get().expect("LoggingService::init() must be called before subscribing to logs").lock()
                                 .await.retain(|sub| sub.id != id);
                         }
+                        LoggingSubscriptionAction::Truncate { id, programs, oneshot_tx } => {
+                            println!("Truncate: id={}", id);
+                            let mut programs_with_ids = HashSet::with_capacity(programs.len());
+                            let mut cnt = 0;
+
+                            for program in &programs {
+                                let idx = match program.parse::<u64>() {
+                                    Ok(idx) => idx,
+                                    Err(_) => continue,
+                                };
+
+                                programs_with_ids.insert(idx);
+                            }
+
+                            for idx in programs_with_ids {
+                                buf_cache.remove(&idx);
+
+                                file_cache.remove(&idx);
+
+                                if let Some((stdout_path, stderr_path)) = Self::ensure_paths(idx) {
+                                    let _ = tokio::fs::OpenOptions::new()
+                                        .write(true)
+                                        .truncate(true)
+                                        .open(&stdout_path)
+                                        .await;
+
+                                    let _ = tokio::fs::OpenOptions::new()
+                                        .write(true)
+                                        .truncate(true)
+                                        .open(&stderr_path)
+                                        .await;
+
+                                    cnt += 1;
+                                }
+                            }
+
+                            if cnt > 0 {
+                                oneshot_tx.send(Ok(format!("Flushed {} log entries", cnt))).ok();
+                            } else {
+                                oneshot_tx.send(Ok(format!("No log entries were flushed"))).ok();
+                            }
+                        }
                     }
                 }
 

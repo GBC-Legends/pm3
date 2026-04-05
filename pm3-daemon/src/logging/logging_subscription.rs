@@ -1,4 +1,5 @@
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use crate::logging::LogChunk;
 use std::collections::HashSet;
@@ -18,5 +19,10 @@ pub enum LoggingSubscriptionAction {
     },
     Unsubscribe {
         id: String,
+    },
+    Truncate {
+        id: String,
+        programs: Vec<String>,
+        oneshot_tx: oneshot::Sender<anyhow::Result<String>>,
     },
 }
