@@ -279,7 +279,9 @@ impl PmProcess {
     }
 
     pub async fn restart(&self) -> anyhow::Result<()> {
-        self.stop().await?;
+        if self.is_active().await {
+            self.stop().await?;
+        }
 
         self.awake().await?;
 
