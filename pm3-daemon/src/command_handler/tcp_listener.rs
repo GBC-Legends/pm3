@@ -267,6 +267,11 @@ impl TcpCommandHandler {
                 Ok(CmdReply::One(reply_rx.await??))
             }
 
+            "dump" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Dump { reply: reply_tx }).await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
             "flush" => {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 tx.send(RunnerCommand::Flush {

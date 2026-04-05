@@ -45,4 +45,7 @@ pub enum RunnerCommand {
         programs: Vec<String>,
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
+    Dump {
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }

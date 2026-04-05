@@ -4,6 +4,7 @@ use crate::logging::logging_subscription::LoggingSubscriptionAction;
 use crate::metrics::metrics_service::MetricsService;
 use crate::process_runner::idx;
 use crate::process_runner::pm3_process::PmProcess;
+use crate::utils::pm3_safe_dir;
 use anyhow::Result;
 use rand::{Rng, distributions::Alphanumeric};
 use std::sync::Arc;
@@ -406,6 +407,38 @@ impl ProcessRunner {
 
                 let msg = oneshot_rx.await?;
                 let _ = reply.send(msg);
+                Ok(())
+            }
+
+            RunnerCommand::Dump { reply } => {
+                let pm3_home_dir = pm3_safe_dir::pm3_home_dir_safe();
+                let configs_dir = pm3_home_dir.join("configs");
+                let configs_old_dir = pm3_home_dir.join("configs.old");
+                let mut cnt = 0;
+
+                let result: anyhow::Result<String> = async {
+                    if tokio::fs::try_exists(&configs_old_dir).await? {
+                        tokio::fs::remove_dir_all(&configs_old_dir).await?;
+                    }
+
+                    if tokio::fs::try_exists(&configs_dir).await? {
+                        tokio::fs::rename(&configs_dir, &configs_old_dir).await?;
+                    }
+
+                    tokio::fs::create_dir_all(&configs_dir).await?;
+                    for proc in &self.processes {
+                        proc.dump_config().await?;
+                        cnt += 1;
+                    }
+
+                    Ok(format!(
+                        "{} configs saved to ~/.pm3/configs (backup created in ~/.pm3/configs.old)",
+                        cnt
+                    ))
+                }
+                .await;
+
+                let _ = reply.send(result);
                 Ok(())
             }
         }
