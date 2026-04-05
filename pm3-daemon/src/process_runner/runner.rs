@@ -91,7 +91,7 @@ impl ProcessRunner {
                         break;
                     };
 
-                    if let Err(e) = self.handle_command(cmd).await {
+                    if let Err(e) = self.handle_command(cmd, &mut sys).await {
                         eprintln!("[pm3] handle_command error: {e:?}");
                     }
                 }
@@ -99,7 +99,11 @@ impl ProcessRunner {
         }
     }
 
-    async fn handle_command(&mut self, cmd: RunnerCommand) -> anyhow::Result<()> {
+    async fn handle_command(
+        &mut self,
+        cmd: RunnerCommand,
+        system: &mut System,
+    ) -> anyhow::Result<()> {
         match cmd {
             RunnerCommand::Ping { reply } => {
                 let _ = reply.send(Ok("pong".to_string()));
@@ -187,12 +191,10 @@ impl ProcessRunner {
                 Ok(())
             }
             RunnerCommand::List { reply } => {
-                let mut system = System::new();
-
                 let mut lines: Vec<String> = Vec::with_capacity(self.processes.len());
 
                 for process in &self.processes {
-                    match process.get_current_status(&mut system).await {
+                    match process.get_current_status(system).await {
                         Ok(info) => lines.push(info.to_qs_line()),
                         Err(e) => {
                             lines.push(format!("status=error&msg={}", e));
