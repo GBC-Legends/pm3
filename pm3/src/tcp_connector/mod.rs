@@ -2,7 +2,6 @@ pub mod delete;
 pub mod logs;
 pub mod monitor;
 pub mod ping;
-pub mod reload;
 pub mod restart;
 pub mod start;
 pub mod status;

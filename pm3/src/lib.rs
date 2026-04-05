@@ -4,7 +4,6 @@ mod utils;
 
 use crate::tcp_connector::delete::delete_program;
 use crate::tcp_connector::ping::ping_server;
-use crate::tcp_connector::reload::reload_program;
 use crate::tcp_connector::restart::restart_program;
 use crate::tcp_connector::start::start_program;
 use crate::tcp_connector::status::request_status;
@@ -25,8 +24,10 @@ pub enum Commands {
     Start(StartArgs),
     Stop(StopArgs),
     Restart(RestartArgs),
-    Reload(ReloadArgs),
+    Reload(RestartArgs),
     Delete(DeleteArgs),
+    Remove(DeleteArgs),
+    Rm(DeleteArgs),
     Status,
     List,
     Ls,
@@ -53,11 +54,6 @@ pub struct StopArgs {
 
 #[derive(Args, Debug)]
 pub struct RestartArgs {
-    programs: Vec<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct ReloadArgs {
     programs: Vec<String>,
 }
 
@@ -89,18 +85,16 @@ pub fn process_commands(cmd: Commands) {
             Ok(response) => println!("{}", response),
             Err(err) => println!("Error: {}", err),
         },
-        Commands::Restart(args) => match restart_program(args.programs) {
+        Commands::Restart(args) | Commands::Reload(args) => match restart_program(args.programs) {
             Ok(response) => println!("{}", response),
             Err(err) => println!("Error: {}", err),
         },
-        Commands::Reload(args) => match reload_program(args.programs) {
-            Ok(response) => println!("{}", response),
-            Err(err) => println!("Error: {}", err),
-        },
-        Commands::Delete(args) => match delete_program(args.programs) {
-            Ok(response) => println!("{}", response),
-            Err(err) => println!("Error: {}", err),
-        },
+        Commands::Delete(args) | Commands::Remove(args) | Commands::Rm(args) => {
+            match delete_program(args.programs) {
+                Ok(response) => println!("{}", response),
+                Err(err) => println!("Error: {}", err),
+            }
+        }
         Commands::Status | Commands::List | Commands::Ls => match request_status() {
             Ok(_) => {}
             Err(err) => eprintln!("pm3: {}", err),
