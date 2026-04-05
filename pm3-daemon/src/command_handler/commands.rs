@@ -33,4 +33,12 @@ pub enum RunnerCommand {
         programs: Vec<String>,
         stream: mpsc::UnboundedSender<anyhow::Result<LogChunk>>,
     },
+    Restart {
+        programs: Vec<String>,
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    Delete {
+        programs: Vec<String>,
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }
