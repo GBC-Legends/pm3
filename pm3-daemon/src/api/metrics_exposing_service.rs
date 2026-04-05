@@ -19,7 +19,6 @@ use tower_http::services::ServeDir;
 
 use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
-use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
 
 #[derive(Clone)]
 pub struct ExposingService {
@@ -50,7 +49,9 @@ impl ExposingService {
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers(tower_http::cors::Any);
 
-        let dashboard_path = pm3_home_dir_safe().join("dashboard/");
+        use crate::utils::pm3_safe_dir::current_dir_safe;
+
+        let dashboard_path = current_dir_safe().join("dashboard/");
 
         let app = Router::new()
             .route("/api/v1/healthz", get(Self::healthz))
