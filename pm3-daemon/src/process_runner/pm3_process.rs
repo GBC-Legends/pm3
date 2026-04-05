@@ -278,6 +278,14 @@ impl PmProcess {
         })
     }
 
+    pub async fn restart(&self) -> anyhow::Result<()> {
+        self.stop().await?;
+
+        self.awake().await?;
+
+        Ok(())
+    }
+
     pub async fn monitor(&self, sys: &mut System) {
         let name = self.proc_name.clone();
         let prefix = format!("{name} [process]");

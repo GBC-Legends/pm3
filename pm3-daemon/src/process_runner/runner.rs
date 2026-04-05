@@ -309,6 +309,81 @@ impl ProcessRunner {
 
                 Ok(())
             }
+            RunnerCommand::Restart {
+                programs: restart_programs,
+                reply,
+            } => {
+                let mut finished = Vec::<String>::new();
+
+                for program_id in restart_programs {
+                    let proc_opt = program_id
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|id| self.processes.iter().find(|p| p.idx == id))
+                        .or_else(|| {
+                            self.processes
+                                .iter()
+                                .find(|p| p.proc_name.as_ref() == program_id)
+                        });
+
+                    if let Some(proc) = proc_opt {
+                        match proc.restart().await {
+                            Ok(()) => finished.push(proc.idx.to_string()),
+                            Err(e) => println!("Error restarting process: {e}"),
+                        }
+                    }
+                }
+
+                let msg = if finished.is_empty() {
+                    "No processes were restarted".to_string()
+                } else {
+                    format!("Restarted {} successfully", finished.join(", "))
+                };
+
+                let _ = reply.send(Ok(msg));
+                Ok(())
+            }
+            RunnerCommand::Delete {
+                programs: delete_programs,
+                reply,
+            } => {
+                let mut finished = Vec::<String>::new();
+
+                for program_id in delete_programs {
+                    let Some(id) = program_id.parse::<u64>().ok() else {
+                        continue;
+                    };
+
+                    let Some(pos) = self.processes.iter().position(|p| p.idx == id) else {
+                        continue;
+                    };
+
+                    {
+                        let proc = &self.processes[pos];
+
+                        if !proc.is_active().await {
+                            println!("process {program_id} is already stopped");
+                        } else {
+                            match proc.stop().await {
+                                Ok(()) => {}
+                                Err(e) => println!("Error stopping process: {e}"),
+                            }
+                        }
+                    }
+
+                    let removed = self.processes.remove(pos);
+                    finished.push(removed.idx.to_string());
+                }
+
+                let msg = if finished.is_empty() {
+                    "No processes were deleted".to_string()
+                } else {
+                    format!("Deleted {} successfully", finished.join(", "))
+                };
+
+                let _ = reply.send(Ok(msg));
+                Ok(())
+            }
         }
     }
 }
