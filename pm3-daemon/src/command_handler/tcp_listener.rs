@@ -267,6 +267,18 @@ impl TcpCommandHandler {
                 Ok(CmdReply::One(reply_rx.await??))
             }
 
+            "flush" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Flush {
+                    reply: reply_tx,
+                    programs: args
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                })
+                .await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
             _ => anyhow::bail!("unknown command"),
         }
     }

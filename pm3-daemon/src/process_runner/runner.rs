@@ -8,7 +8,7 @@ use anyhow::Result;
 use rand::{Rng, distributions::Alphanumeric};
 use std::sync::Arc;
 use sysinfo::System;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
@@ -384,6 +384,28 @@ impl ProcessRunner {
                 };
 
                 let _ = reply.send(Ok(msg));
+                Ok(())
+            }
+            RunnerCommand::Flush { programs, reply } => {
+                let (oneshot_tx, oneshot_rx) = oneshot::channel();
+                let shared_sender = self.subs_sender.clone();
+
+                let sub_id: String = rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(5)
+                    .map(char::from)
+                    .collect();
+
+                let sub = LoggingSubscriptionAction::Truncate {
+                    id: sub_id,
+                    programs,
+                    oneshot_tx,
+                };
+
+                let _ = shared_sender.send(sub);
+
+                let msg = oneshot_rx.await?;
+                let _ = reply.send(msg);
                 Ok(())
             }
         }
