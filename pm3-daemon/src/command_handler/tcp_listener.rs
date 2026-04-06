@@ -241,6 +241,56 @@ impl TcpCommandHandler {
                 Ok(CmdReply::Stream(reply_rx))
             }
 
+            "restart" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Restart {
+                    reply: reply_tx,
+                    programs: args
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                })
+                .await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
+
+            "delete" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Delete {
+                    reply: reply_tx,
+                    programs: args
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                })
+                .await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
+
+            "revive" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Revive { reply: reply_tx }).await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
+
+            "dump" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Dump { reply: reply_tx }).await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
+
+            "flush" => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                tx.send(RunnerCommand::Flush {
+                    reply: reply_tx,
+                    programs: args
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                })
+                .await?;
+                Ok(CmdReply::One(reply_rx.await??))
+            }
             _ => anyhow::bail!("unknown command"),
         }
     }
