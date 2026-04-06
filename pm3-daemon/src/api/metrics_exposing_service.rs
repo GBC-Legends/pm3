@@ -19,7 +19,6 @@ use tower_http::services::ServeDir;
 
 use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
-use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
 
 #[derive(Clone)]
 pub struct ExposingService {
@@ -64,7 +63,7 @@ impl ExposingService {
             )
             .route("/api/v1/subscribe_logs", get(Self::subscribe_logs))
             // Serve the dashboard from the dashboard_path directory
-            .nest_service("/", ServeDir::new(dashboard_path))
+            .fallback_service(ServeDir::new(dashboard_path))
             .layer(cors)
             .with_state(self.clone());
 
