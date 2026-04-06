@@ -33,6 +33,8 @@ jobs:
 
       - name: Build dashboard
         working-directory: ./pm3-dashboard
+        env:
+          VITE_API_URL: /api/v1/
         run: npm run build
 
       - name: Upload dashboard artifact
