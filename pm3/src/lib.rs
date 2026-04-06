@@ -3,8 +3,11 @@ mod tcp_connector;
 mod utils;
 
 use crate::tcp_connector::delete::delete_program;
+use crate::tcp_connector::dump::dump_program;
+use crate::tcp_connector::flush::flush_program;
 use crate::tcp_connector::ping::ping_server;
 use crate::tcp_connector::restart::restart_program;
+use crate::tcp_connector::revive::revive_program;
 use crate::tcp_connector::start::start_program;
 use crate::tcp_connector::status::request_status;
 use crate::tcp_connector::stop::stop_program;
@@ -25,6 +28,8 @@ pub enum Commands {
     Stop(StopArgs),
     Restart(RestartArgs),
     Reload(RestartArgs),
+    Revive,
+    Resurrect,
     Delete(DeleteArgs),
     Remove(DeleteArgs),
     Rm(DeleteArgs),
@@ -32,6 +37,10 @@ pub enum Commands {
     List,
     Ls,
     Logs(LogsArgs),
+    Flush(FlushArgs),
+    Clear(FlushArgs),
+    Dump,
+    Save,
     Monit,
     Monitor,
 }
@@ -63,6 +72,11 @@ pub struct DeleteArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct FlushArgs {
+    programs: Vec<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct LogsArgs {
     #[arg(long)]
     pub lines: Option<u64>,
@@ -78,23 +92,35 @@ pub fn process_commands(cmd: Commands) {
         Commands::Start(args) => {
             match start_program(args.program, args.args, args.interpreter, args.name) {
                 Ok(response) => println!("{}", response),
-                Err(err) => println!("Error: {}", err),
+                Err(err) => println!("pm3: {}", err),
             }
         }
         Commands::Stop(args) => match stop_program(args.programs) {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("Error: {}", err),
+            Err(err) => println!("pm3: {}", err),
         },
         Commands::Restart(args) | Commands::Reload(args) => match restart_program(args.programs) {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("Error: {}", err),
+            Err(err) => println!("pm3: {}", err),
         },
         Commands::Delete(args) | Commands::Remove(args) | Commands::Rm(args) => {
             match delete_program(args.programs) {
                 Ok(response) => println!("{}", response),
-                Err(err) => println!("Error: {}", err),
+                Err(err) => println!("pm3: {}", err),
             }
         }
+        Commands::Revive | Commands::Resurrect => match revive_program() {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("pm3: {}", err),
+        },
+        Commands::Dump | Commands::Save => match dump_program() {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("pm3: {}", err),
+        },
+        Commands::Flush(args) | Commands::Clear(args) => match flush_program(args.programs) {
+            Ok(response) => println!("{}", response),
+            Err(err) => println!("pm3: {}", err),
+        },
         Commands::Status | Commands::List | Commands::Ls => match request_status() {
             Ok(_) => {}
             Err(err) => eprintln!("pm3: {}", err),

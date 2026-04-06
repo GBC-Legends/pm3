@@ -357,8 +357,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result
             app.refresh_status();
             let after_id = app.selected_process_id();
 
-            if app.show_all_logs {
-            } else if before_id != after_id {
+            if !app.show_all_logs && before_id != after_id {
                 app.clear_logs();
                 app.clear_metrics();
                 app.start_stream_for_current_selection();
@@ -579,7 +578,7 @@ fn draw_mem_chart(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     .block(Block::default().title(" Memory ").borders(Borders::ALL))
     .x_axis(Axis::default().bounds([min_x, max_x]).labels(labels))
     .y_axis(Axis::default().bounds([0.0, mem_top]).labels([
-        "0".into(),
+        "0MB".into(),
         format!("{:.0}MB", mem_top / 2.0),
         format!("{:.0}MB", mem_top),
     ]));

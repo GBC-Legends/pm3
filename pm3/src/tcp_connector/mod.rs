@@ -1,8 +1,11 @@
 pub mod delete;
+pub mod dump;
+pub mod flush;
 pub mod logs;
 pub mod monitor;
 pub mod ping;
 pub mod restart;
+pub mod revive;
 pub mod start;
 pub mod status;
 pub mod stop;
