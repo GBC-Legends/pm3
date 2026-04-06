@@ -1,172 +1,266 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 REPO="GBC-Legends/pm3"
+API_URL="https://api.github.com/repos/$REPO/releases/latest"
 
-INSTALL_ROOT="/usr/bin/pm3"
-BIN_LINK="/usr/bin/pm3"
+INSTALL_DIR="/usr/bin/pm3"
+CLI_PATH="$INSTALL_DIR/pm3"
+DAEMON_PATH="$INSTALL_DIR/pm3-daemon"
+DASHBOARD_DIR="$INSTALL_DIR/dashboard"
 
-SYSTEMD_USER_DIR=".config/systemd/user"
+PROFILED_DIR="/etc/profile.d"
+PROFILED_FILE="$PROFILED_DIR/pm3_path.sh"
+
+SYSTEMD_USER_UNIT_DIR="/etc/systemd/user"
 SERVICE_NAME="pm3.service"
+SERVICE_PATH="$SYSTEMD_USER_UNIT_DIR/$SERVICE_NAME"
 
 TMP_DIR=""
 
-info()    { printf '\033[1;34m%s\033[0m\n' "$*"; }
-success() { printf '\033[1;32m%s\033[0m\n' "$*"; }
-warn()    { printf '\033[1;33m%s\033[0m\n' "$*"; }
-error()   { printf '\033[1;31mError: %s\033[0m\n' "$*" >&2; exit 1; }
+info() {
+    printf '%s\n' "$*" >&2
+}
+
+warn() {
+    printf 'WARN: %s\n' "$*" >&2
+}
+
+success() {
+    printf '%s\n' "$*" >&2
+}
+
+error() {
+    printf 'Error: %s\n' "$*" >&2
+    exit 1
+}
 
 cleanup() {
-    [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR"
+    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
+        rm -rf "$TMP_DIR"
+    fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 require_root() {
-    [ "$EUID" -ne 0 ] && error "Run as root (sudo)"
+    if [ "$(id -u)" -ne 0 ]; then
+        error "run as root"
+    fi
 }
 
 require_cmd() {
-    command -v "$1" >/dev/null 2>&1 || error "Missing: $1"
+    command -v "$1" >/dev/null 2>&1 || error "missing command: $1"
 }
 
 check_requirements() {
+    require_root
     require_cmd curl
     require_cmd tar
-    require_cmd systemctl
     require_cmd grep
+    require_cmd cut
+    require_cmd head
+    require_cmd mktemp
+    require_cmd install
+    require_cmd cp
+    require_cmd rm
+    require_cmd mkdir
+    require_cmd find
+    require_cmd systemctl
+    require_cmd loginctl
+    require_cmd getent
+    require_cmd su
 }
 
-get_latest_url() {
-    info "Fetching latest release..."
+confirm_replace_if_installed() {
+    if [ -e "$CLI_PATH" ] || [ -e "$DAEMON_PATH" ] || [ -d "$DASHBOARD_DIR" ]; then
+        printf 'pm3 is already installed in %s\n' "$INSTALL_DIR" >&2
+        printf 'Delete current binaries/dashboard and install the latest release over them? [y/N]: ' >&2
+        read ans || true
 
-    local url
-    url=$(curl -s https://api.github.com/repos/$REPO/releases/latest \
-        | grep "browser_download_url" \
-        | grep "linux-x86_64.tar.gz" \
-        | cut -d '"' -f 4)
+        case "${ans:-}" in
+            y|Y|yes|YES)
+                info "updating existing installation"
+                ;;
+            *)
+                error "installation cancelled"
+                ;;
+        esac
+    fi
+}
 
-    [ -z "$url" ] && error "Failed to get latest release URL"
-
-    echo "$url"
+get_latest_release_url() {
+    curl -fsSL "$API_URL" \
+        | grep '"browser_download_url"' \
+        | grep 'pm3-linux-x86_64\.tar\.gz' \
+        | head -n 1 \
+        | cut -d '"' -f 4
 }
 
 download_and_extract() {
     TMP_DIR="$(mktemp -d)"
-    local archive="$TMP_DIR/pm3.tar.gz"
-    local extract="$TMP_DIR/extracted"
+    ARCHIVE="$TMP_DIR/pm3.tar.gz"
+    EXTRACT_DIR="$TMP_DIR/extracted"
 
-    mkdir -p "$extract"
+    mkdir -p "$EXTRACT_DIR"
 
-    local url
-    url="$(get_latest_url)"
+    info "fetching latest release url..."
+    URL="$(get_latest_release_url)"
+    [ -n "$URL" ] || error "failed to resolve latest release url"
 
-    info "Downloading: $url"
-    curl -fL "$url" -o "$archive"
+    info "downloading $URL"
+    curl -fL "$URL" -o "$ARCHIVE"
 
-    info "Extracting..."
-    tar -xzf "$archive" -C "$extract"
+    info "extracting archive"
+    tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR"
 
-    echo "$extract"
+    printf '%s\n' "$EXTRACT_DIR"
 }
 
-find_root() {
-    local dir="$1"
+find_binary() {
+    BASE="$1"
+    NAME="$2"
 
-    if [ -f "$dir/pm3" ]; then
-        echo "$dir"
-        return
+    FOUND="$(find "$BASE" -type f -name "$NAME" 2>/dev/null | head -n 1 || true)"
+    [ -n "$FOUND" ] || error "$NAME not found inside archive"
+
+    printf '%s\n' "$FOUND"
+}
+
+find_dashboard_dir() {
+    BASE="$1"
+    FOUND="$(find "$BASE" -type d -name dashboard 2>/dev/null | head -n 1 || true)"
+    if [ -n "$FOUND" ]; then
+        printf '%s\n' "$FOUND"
     fi
-
-    local found
-    found="$(find "$dir" -type f -name pm3 | head -n 1)"
-
-    [ -z "$found" ] && error "pm3 binary not found"
-
-    dirname "$found"
 }
 
 install_files() {
-    local src="$1"
+    BASE="$1"
 
-    info "Installing to $INSTALL_ROOT"
+    PM3_BIN="$(find_binary "$BASE" pm3)"
+    PM3_DAEMON_BIN="$(find_binary "$BASE" pm3-daemon)"
+    DASH_SRC="$(find_dashboard_dir "$BASE" || true)"
 
-    rm -rf "$INSTALL_ROOT"
-    mkdir -p "$INSTALL_ROOT"
+    info "preparing install dir $INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
 
-    cp "$src/pm3" "$INSTALL_ROOT/"
-    cp "$src/pm3-daemon" "$INSTALL_ROOT/"
-    chmod +x "$INSTALL_ROOT/"*
+    info "removing old binaries"
+    rm -f "$CLI_PATH" "$DAEMON_PATH"
+    rm -rf "$DASHBOARD_DIR"
 
-    if [ -d "$src/dashboard" ]; then
-        cp -r "$src/dashboard" "$INSTALL_ROOT/"
+    info "installing binaries"
+    install -m 0755 "$PM3_BIN" "$CLI_PATH"
+    install -m 0755 "$PM3_DAEMON_BIN" "$DAEMON_PATH"
+
+    if [ -n "${DASH_SRC:-}" ] && [ -d "$DASH_SRC" ]; then
+        info "installing dashboard"
+        cp -R "$DASH_SRC" "$DASHBOARD_DIR"
+    else
+        warn "dashboard directory not found in archive"
     fi
-
-    ln -sf "$INSTALL_ROOT/pm3" "$BIN_LINK"
 }
 
-create_user_service() {
-    local user="$1"
-    local home_dir
-    home_dir="$(eval echo "~$user")"
+install_path_env() {
+    info "adding $INSTALL_DIR to PATH"
 
-    local dir="$home_dir/$SYSTEMD_USER_DIR"
-    mkdir -p "$dir"
+    mkdir -p "$PROFILED_DIR"
 
-    cat > "$dir/$SERVICE_NAME" <<EOF
+    cat > "$PROFILED_FILE" <<EOF
+# added by pm3 installer
+case ":\$PATH:" in
+    *:$INSTALL_DIR:*) ;;
+    *) export PATH="$INSTALL_DIR:\$PATH" ;;
+esac
+EOF
+
+    chmod 0644 "$PROFILED_FILE"
+}
+
+write_systemd_user_unit() {
+    info "writing user unit to $SERVICE_PATH"
+    mkdir -p "$SYSTEMD_USER_UNIT_DIR"
+
+    cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=pm3 daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_ROOT/pm3-daemon
+ExecStart=$DAEMON_PATH
 Restart=always
 RestartSec=3
-WorkingDirectory=$INSTALL_ROOT
+WorkingDirectory=$INSTALL_DIR
 LimitNOFILE=65536
 
 [Install]
 WantedBy=default.target
 EOF
-
-    chown -R "$user:$user" "$home_dir/.config"
 }
 
-enable_for_user() {
-    local user="$1"
-
-    info "Enable for $user"
-
-    sudo -u "$user" systemctl --user daemon-reload || true
-    sudo -u "$user" systemctl --user enable pm3 || true
-    sudo -u "$user" systemctl --user restart pm3 || true
-
-    loginctl enable-linger "$user" >/dev/null 2>&1 || true
+enable_global_user_unit() {
+    info "enabling global user unit"
+    systemctl --global enable "$SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
-install_for_all_users() {
-    for user in $(ls /home); do
-        create_user_service "$user"
-        enable_for_user "$user"
+enable_linger_for_real_users() {
+    info "enabling linger for regular users"
+
+    getent passwd | while IFS=: read -r name _ uid _ _ home _; do
+        case "$uid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+
+        if [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] && [ -d "$home" ]; then
+            loginctl enable-linger "$name" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
+restart_running_user_services() {
+    info "restarting pm3 for users with active user manager"
+
+    getent passwd | while IFS=: read -r name _ uid _ _ home _; do
+        case "$uid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+
+        if [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] && [ -d "$home" ]; then
+            XDG_RUNTIME_DIR="/run/user/$uid"
+
+            if [ -S "$XDG_RUNTIME_DIR/bus" ]; then
+                su - "$name" -s /bin/sh -c "
+                    export XDG_RUNTIME_DIR='$XDG_RUNTIME_DIR'
+                    systemctl --user daemon-reload || true
+                    systemctl --user enable $SERVICE_NAME >/dev/null 2>&1 || true
+                    systemctl --user restart $SERVICE_NAME || true
+                " || true
+            fi
+        fi
     done
 }
 
 main() {
-    require_root
     check_requirements
+    confirm_replace_if_installed
 
-    local extracted
-    extracted="$(download_and_extract)"
+    EXTRACTED="$(download_and_extract)"
 
-    local root
-    root="$(find_root "$extracted")"
+    install_files "$EXTRACTED"
+    install_path_env
+    write_systemd_user_unit
+    enable_global_user_unit
+    enable_linger_for_real_users
+    restart_running_user_services
 
-    install_files "$root"
-    install_for_all_users
-
-    success "Installed latest pm3"
-    success "Command: pm3"
-    success "Daemon isolated per user"
+    success "pm3 installed/updated successfully"
+    success "files dir: $INSTALL_DIR"
+    success "cli: $CLI_PATH"
+    success "daemon: $DAEMON_PATH"
+    success "dashboard: $DASHBOARD_DIR"
+    success "user service: $SERVICE_PATH"
+    success "PATH is added via $PROFILED_FILE"
+    success "relogin or run: . $PROFILED_FILE"
 }
 
 main "$@"
