@@ -64,7 +64,7 @@ impl ExposingService {
             )
             .route("/api/v1/subscribe_logs", get(Self::subscribe_logs))
             // Serve the dashboard from the dashboard_path directory
-            .nest_service("/dash", ServeDir::new(dashboard_path))
+            .nest_service("/", ServeDir::new(dashboard_path))
             .layer(cors)
             .with_state(self.clone());
 
