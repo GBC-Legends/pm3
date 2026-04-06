@@ -16,6 +16,7 @@ use tokio::time::{Duration, interval};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_http::services::ServeFile;
 
 use crate::logging::LogChunk;
 use crate::logging::logging_subscription::LoggingSubscriptionAction;
@@ -52,6 +53,7 @@ impl ExposingService {
         use crate::utils::pm3_safe_dir::current_dir_safe;
 
         let dashboard_path = current_dir_safe().join("dashboard/");
+        let index_file = dashboard_path.join("index.html");
 
         let app = Router::new()
             .route("/api/v1/healthz", get(Self::healthz))
@@ -63,7 +65,9 @@ impl ExposingService {
             )
             .route("/api/v1/subscribe_logs", get(Self::subscribe_logs))
             // Serve the dashboard from the dashboard_path directory
-            .fallback_service(ServeDir::new(dashboard_path))
+            .fallback_service(
+                ServeDir::new(&dashboard_path).not_found_service(ServeFile::new(index_file)),
+            )
             .layer(cors)
             .with_state(self.clone());
 
