@@ -393,10 +393,14 @@ impl ProcessRunner {
                     oneshot_tx,
                 };
 
-                let _ = shared_sender.send(sub);
+                if shared_sender.send(sub).await.is_err() {
+                    let _ = reply.send(Err(anyhow::anyhow!("channel closed")));
+                    return Ok(());
+                }
 
                 let msg = oneshot_rx.await?;
                 let _ = reply.send(msg);
+
                 Ok(())
             }
             RunnerCommand::Dump { reply } => {

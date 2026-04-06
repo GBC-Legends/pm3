@@ -141,8 +141,13 @@ pub fn print_process_table(processes: &[PmProcessStatusInfo]) {
 
     let mut table = Table::new(rows);
 
+    if supports_rounded() {
+        table.with(Style::modern_rounded());
+    } else {
+        table.with(Style::modern());
+    }
+
     table
-        .with(Style::modern_rounded())
         .with(Modify::new(Columns::new(0..=0)).with(Alignment::right()))
         .with(Modify::new(Columns::new(2..=2)).with(Alignment::right()))
         .with(Modify::new(Columns::new(4..=4)).with(Alignment::right()))
@@ -173,4 +178,13 @@ pub fn print_process_table(processes: &[PmProcessStatusInfo]) {
 
     println!("Process status:");
     println!("{table}");
+}
+
+fn supports_rounded() -> bool {
+    let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
+
+    std::env::var("WT_SESSION").is_ok()
+        || term.contains("256color")
+        || term.contains("tmux")
+        || term.contains("screen")
 }

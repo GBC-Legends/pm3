@@ -4,7 +4,7 @@ use crossterm::style::{Color, Stylize};
 
 use crate::tcp_connector::send_secure_command;
 
-pub fn stop_program(mut programs: Vec<String>) -> Result<String> {
+pub fn flush_program(mut programs: Vec<String>) -> Result<String> {
     if programs.is_empty() {
         return Err(Error::new(ErrorKind::InvalidInput, "no programs specified"));
     }
@@ -40,7 +40,7 @@ pub fn stop_program(mut programs: Vec<String>) -> Result<String> {
         return Err(Error::new(ErrorKind::InvalidInput, "no programs found"));
     }
 
-    let plaintext = format!("stop {}", programs.join(" "));
+    let plaintext = format!("flush {}", programs.join(" "));
     let reply = send_secure_command(&plaintext)?;
 
     Ok(reply)
