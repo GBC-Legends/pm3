@@ -40,3 +40,7 @@ pub(crate) fn pm3_home_dir_safe() -> PathBuf {
 
     dir
 }
+
+pub(crate) fn current_dir_safe() -> PathBuf {
+    env::current_dir().expect("cannot determine any usable directory")
+}

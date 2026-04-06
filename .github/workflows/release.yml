@@ -102,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.bundle_name }}-binaries
-          path: artifact-bin
+          path: artifact-bin/*
 
   package:
     needs: [build_dashboard, build_binaries]
@@ -142,18 +142,12 @@ jobs:
           name: ${{ matrix.bundle_name }}-binaries
           path: binaries
 
-      - name: Show downloaded files (Linux/macOS debug)
+      - name: Show downloaded files (debug)
         if: runner.os != 'Windows'
         run: |
-          find binaries -maxdepth 3
-          find dashboard-dist -maxdepth 3
-
-      - name: Show downloaded files (Windows debug)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Get-ChildItem binaries -Recurse
-          Get-ChildItem dashboard-dist -Recurse
+          pwd
+          find binaries -maxdepth 3 -type f
+          find dashboard-dist -maxdepth 3 -type f
 
       - name: Prepare bundle (Linux/macOS)
         if: runner.os != 'Windows'
