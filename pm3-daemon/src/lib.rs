@@ -11,19 +11,13 @@ use crate::api::metrics_exposing_service::ExposingService;
 use crate::command_handler::commands::RunnerCommand;
 use crate::logging::logging_service::LoggingService;
 use crate::metrics::metrics_service::MetricsService;
-use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
 
 use command_handler::tcp_listener::TcpCommandHandler;
 use process_runner::runner;
-use tokio::fs;
 use tokio::sync::mpsc;
 
-pub async fn start_application(public: bool) -> anyhow::Result<()> {
-    let pm3_cfg = daemon_config::DaemonConfig::new(public)?;
-    let pm3_configs_path = pm3_home_dir_safe().join("configs");
-    fs::create_dir_all(&pm3_configs_path)
-        .await
-        .expect("PM3-daemon couldn't create its configs directory");
+pub async fn start_application() -> anyhow::Result<()> {
+    let pm3_cfg = daemon_config::DaemonConfig::new()?;
 
     let (logging_rx, logging_subs_tx, logging_subs_rx) = LoggingService::init();
 

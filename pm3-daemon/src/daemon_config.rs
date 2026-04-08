@@ -1,7 +1,9 @@
 use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
 use anyhow::{self, Context};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use dotenvy;
 use rand_core::{OsRng, RngCore};
+use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener};
@@ -21,29 +23,40 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-    pub fn new(public: bool) -> anyhow::Result<Self> {
-        let port = Self::find_available_port_with_default(DEFAULT_PORT)?;
+    pub fn new() -> anyhow::Result<Self> {
+        let pm3_home = pm3_home_dir_safe();
+        let configs_path = pm3_home.join("configs");
+        fs::create_dir_all(&configs_path)?;
 
-        // is expected to be stable for proper reverse_proxy
-        // to set up later with proper SSL and TLS support and auth in the way suits your needs better.
-        // we do not want you to be forced to stick to JWT, Bearer, SSO, Oauth2.
-        // you can select level of security you have to use that suits your needs better.
-        let metrics_api_port = DEFAULT_METRICS_API_PORT;
+        let env_path = configs_path.join("pm3.env");
+
+        let checked_api_port = Self::find_available_port_with_default(DEFAULT_METRICS_API_PORT)?;
+
+        if !env_path.exists() {
+            let mut file = fs::File::create(&env_path)?;
+            writeln!(file, "PM3_IP=127.0.0.1")?;
+            writeln!(file, "PM3_API_PORT={}", checked_api_port)?;
+        }
+
+        dotenvy::from_path(&env_path).ok();
+
+        let metrics_api_addr = std::env::var("PM3_IP").unwrap_or_else(|_| "127.0.0.1".to_string());
+
+        let metrics_api_port = std::env::var("PM3_API_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(8096);
+
+        let cli_port = Self::find_available_port_with_default(DEFAULT_PORT)?;
 
         let mut key = [0u8; 32];
         OsRng.fill_bytes(&mut key);
 
-        let metrics_api_addr = if public {
-            "0.0.0.0".to_string()
-        } else {
-            "127.0.0.1".to_string()
-        };
-
         let result = Self {
-            port,
+            port: cli_port,
             key_b64: URL_SAFE_NO_PAD.encode(key),
             metrics_api_port,
-            metrics_api_addr: metrics_api_addr,
+            metrics_api_addr,
         };
 
         result.dump()?;
