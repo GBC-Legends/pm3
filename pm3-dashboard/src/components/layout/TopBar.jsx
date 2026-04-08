@@ -1,11 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LogOut } from 'lucide-react';
-import { auth } from '../../services/auth';
 import { daemon } from '../../services';
 
 export default function TopBar() {
-  const navigate = useNavigate();
   const [time, setTime] = useState(new Date().toLocaleTimeString('en-US', { hour12: false }));
   const [connected, setConnected] = useState(true);
 
@@ -31,11 +27,6 @@ export default function TopBar() {
     return () => { cancelled = true; clearInterval(id); };
   }, [isRealDaemon]);
 
-  const handleLogout = () => {
-    auth.logout();
-    navigate('/login');
-  };
-
   let daemonHost;
   try { daemonHost = new URL(apiUrl, window.location.origin).host; } catch { daemonHost = apiUrl; }
 
@@ -52,16 +43,7 @@ export default function TopBar() {
         {statusLabel}
       </div>
 
-      <div className="flex items-center gap-4">
-        <span className="text-sm text-pm3-muted font-mono">{time}</span>
-        <button
-          onClick={handleLogout}
-          className="text-pm3-muted hover:text-pm3-text p-1.5 rounded hover:bg-pm3-hover transition-colors"
-          title="Logout"
-        >
-          <LogOut className="w-4 h-4" />
-        </button>
-      </div>
+      <span className="text-sm text-pm3-muted font-mono">{time}</span>
     </div>
   );
 }

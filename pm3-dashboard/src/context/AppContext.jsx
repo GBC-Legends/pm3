@@ -3,6 +3,8 @@ import { daemon } from '../services';
 
 const AppContext = createContext(null);
 
+const HISTORY_CAP = 300;
+
 export function AppProvider({ children }) {
   const [processes, setProcesses] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -18,6 +20,22 @@ export function AppProvider({ children }) {
     Promise.resolve(daemon.getProcesses()).then(setProcesses);
   }, []);
 
+  // Preload ~5 minutes of metrics history on mount
+  useEffect(() => {
+    Promise.resolve(daemon.getMetricsHistory(300)).then(history => {
+      if (history && Object.keys(history).length > 0) {
+        setMetricsHistory(prev => {
+          const merged = { ...history };
+          // Append any points the subscription already added
+          for (const [id, existing] of Object.entries(prev)) {
+            merged[id] = [...(history[id] || []), ...existing].slice(-HISTORY_CAP);
+          }
+          return merged;
+        });
+      }
+    });
+  }, []);
+
   // Subscribe to metrics
   useEffect(() => {
     const unsub = daemon.subscribeToMetrics((newMetrics) => {
@@ -27,7 +45,7 @@ export function AppProvider({ children }) {
         const time = new Date().toLocaleTimeString('en-US', { hour12: false });
         for (const [id, data] of Object.entries(newMetrics)) {
           const history = next[id] || [];
-          next[id] = [...history, { time, cpu: data.cpu, ram: data.ram }].slice(-24);
+          next[id] = [...history, { time, cpu: data.cpu, ram: data.ram }].slice(-HISTORY_CAP);
         }
         return next;
       });

@@ -156,6 +156,37 @@ export const mockDaemon = {
     return [...processes];
   },
 
+  getMetricsHistory(sinceSec = 300) {
+    const history = {};
+    const now = Date.now();
+    const intervalMs = 5000;
+    const points = Math.floor(sinceSec / (intervalMs / 1000));
+
+    processes.forEach(p => {
+      if (p.status === 'running' && BASE_METRICS[p.id]) {
+        const base = BASE_METRICS[p.id];
+        let cpu = base.cpu;
+        let ram = base.ram;
+        const entries = [];
+
+        for (let i = 0; i < points; i++) {
+          cpu = nudge(cpu, base.cpu, 3);
+          ram = nudge(ram, base.ram, 8);
+          const t = new Date(now - (points - i) * intervalMs);
+          entries.push({
+            time: t.toLocaleTimeString('en-US', { hour12: false }),
+            cpu: Math.round(cpu * 10) / 10,
+            ram: Math.round(ram * 10) / 10,
+          });
+        }
+
+        history[p.id] = entries;
+      }
+    });
+
+    return history;
+  },
+
   startProcess(id) {
     const proc = processes.find(p => p.id === id);
     if (!proc) return Promise.reject(new Error('Process not found'));

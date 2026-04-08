@@ -51,17 +51,5 @@ export function useProcesses() {
     }
   }, [refreshProcesses, addToast]);
 
-  const addProcess = useCallback(async (config) => {
-    try {
-      const promise = daemon.addProcess(config);
-      refreshProcesses();
-      await promise;
-      refreshProcesses();
-      addToast(`Process "${config.name}" started`, 'success');
-    } catch (err) {
-      addToast(err.message, 'error');
-    }
-  }, [refreshProcesses, addToast]);
-
-  return { processes, startProcess, stopProcess, restartProcess, deleteProcess, addProcess };
+  return { processes, startProcess, stopProcess, restartProcess, deleteProcess };
 }

@@ -1,14 +1,10 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { auth } from '../services/auth';
 import { daemon, daemonCapabilities } from '../services';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 
 export default function Settings() {
-  const navigate = useNavigate();
   const { addToast, setLogs, refreshInterval, setRefreshInterval } = useApp();
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [daemonStatus, setDaemonStatus] = useState('checking');
 
@@ -29,12 +25,6 @@ export default function Settings() {
     const id = setInterval(check, 15000);
     return () => { cancelled = true; clearInterval(id); };
   }, [isRealDaemon]);
-
-  const handleReset = () => {
-    auth.resetSetup();
-    setShowResetConfirm(false);
-    navigate('/setup');
-  };
 
   const handleClearLogs = () => {
     setLogs([]);
@@ -96,6 +86,7 @@ export default function Settings() {
             onChange={(e) => setRefreshInterval(Number(e.target.value))}
             className="bg-slate-900 border border-pm3-border rounded-md px-3 py-1.5 text-pm3-text text-sm focus:outline-none focus:border-pm3-orange"
           >
+            <option value={1000}>1 second</option>
             <option value={5000}>5 seconds</option>
             <option value={10000}>10 seconds</option>
             <option value={30000}>30 seconds</option>
@@ -117,21 +108,6 @@ export default function Settings() {
 
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-pm3-text text-sm">Reset Dashboard Setup</p>
-            <p className="text-pm3-muted text-xs">Clear password and return to setup screen</p>
-          </div>
-          <button
-            onClick={() => setShowResetConfirm(true)}
-            className="bg-red-600 hover:bg-red-700 text-white rounded-md px-4 py-2 text-sm transition-colors"
-          >
-            Reset
-          </button>
-        </div>
-
-        <div className="border-t border-pm3-border/50" />
-
-        <div className="flex items-center justify-between">
-          <div>
             <p className="text-pm3-text text-sm">Clear All Logs</p>
             <p className="text-pm3-muted text-xs">Remove all log entries from memory</p>
           </div>
@@ -143,16 +119,6 @@ export default function Settings() {
           </button>
         </div>
       </div>
-
-      <ConfirmDialog
-        isOpen={showResetConfirm}
-        title="Reset Dashboard Setup"
-        message="This will clear your password and all settings. You will need to set up the dashboard again."
-        confirmLabel="Reset Everything"
-        confirmVariant="danger"
-        onConfirm={handleReset}
-        onCancel={() => setShowResetConfirm(false)}
-      />
 
       <ConfirmDialog
         isOpen={showClearConfirm}
