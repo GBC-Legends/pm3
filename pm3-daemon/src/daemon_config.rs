@@ -28,7 +28,7 @@ impl DaemonConfig {
         let configs_path = pm3_home.join("configs");
         fs::create_dir_all(&configs_path)?;
 
-        let env_path = configs_path.join("pm3.env");
+        let env_path = pm3_home.join("pm3.env");
 
         let checked_api_port = Self::find_available_port_with_default(DEFAULT_METRICS_API_PORT)?;
 
