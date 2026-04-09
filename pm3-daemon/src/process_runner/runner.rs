@@ -156,13 +156,13 @@ impl ProcessRunner {
 
                     if let Some(proc) = proc_opt {
                         if !proc.is_active().await {
-                            println!("process {program_id} is already stopped");
+                            eprintln!("process {program_id} is already stopped");
                             continue;
                         }
 
                         match proc.stop().await {
                             Ok(()) => finished.push(proc.idx.to_string()),
-                            Err(e) => println!("Error stopping process: {e}"),
+                            Err(e) => eprintln!("Error stopping process: {e}"),
                         }
                     }
                 }
@@ -317,7 +317,7 @@ impl ProcessRunner {
                     if let Some(proc) = proc_opt {
                         match proc.restart().await {
                             Ok(()) => finished.push(proc.idx.to_string()),
-                            Err(e) => println!("Error restarting process: {e}"),
+                            Err(e) => eprintln!("Error restarting process: {e}"),
                         }
                     }
                 }
@@ -350,11 +350,11 @@ impl ProcessRunner {
                         let proc = &self.processes[pos];
 
                         if !proc.is_active().await {
-                            println!("process {program_id} is already stopped");
+                            eprintln!("process {program_id} is already stopped");
                         } else {
                             match proc.stop().await {
                                 Ok(()) => {}
-                                Err(e) => println!("Error stopping process: {e}"),
+                                Err(e) => eprintln!("Error stopping process: {e}"),
                             }
                         }
                     }

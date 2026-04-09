@@ -350,14 +350,9 @@ impl PmProcess {
                 Ok(_) => (),
                 Err(e) => eprintln!("Failed to send metrics log: {e}"),
             };
-
-            println!(
-                "{prefix} [monitor] CPU: {:.2}% | RAM: {}",
-                cpu,
-                format_bytes(mem_mb)
-            );
+            format_bytes(mem_mb);
         } else {
-            println!("{prefix} process not found (pid={})", pid.as_u32());
+            eprintln!("{prefix} process not found (pid={})", pid.as_u32());
         }
     }
 

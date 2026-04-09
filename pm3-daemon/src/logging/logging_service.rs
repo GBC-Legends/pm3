@@ -384,7 +384,7 @@ impl LoggingService {
 
                     match sub {
                         LoggingSubscriptionAction::Subscribe { id, tx, programs, lines } => {
-                            println!("Subscribtion: id={}, programs={:?}, lines={}", id, programs, lines);
+                            println!("Subscription: id={}, programs={:?}, lines={}", id, programs, lines);
                             let mut programs_with_ids = HashSet::with_capacity(programs.len());
 
                             for program in &programs {

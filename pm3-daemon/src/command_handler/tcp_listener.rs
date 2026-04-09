@@ -42,7 +42,6 @@ impl TcpCommandHandler {
 
         loop {
             let (stream, addr) = self.listener.accept().await?;
-            println!("New client: {addr}");
 
             let tx = self.tx.clone();
             let key = key;
@@ -76,7 +75,6 @@ impl TcpCommandHandler {
             let cmd = line.trim();
             match Self::process_command(cmd, &tx).await {
                 Ok(CmdReply::One(msg)) => {
-                    println!("{cmd}1");
                     let reply_plain = format!("OK {msg}\n");
                     let token = encrypt_reply_to_token(key, reply_plain.as_bytes(), aad);
                     write_half
@@ -166,7 +164,6 @@ impl TcpCommandHandler {
         tx: &mpsc::Sender<RunnerCommand>,
     ) -> anyhow::Result<CmdReply> {
         let (command, args) = Self::break_command(cmd);
-        println!("{command}, {args:?}");
 
         match command.as_str() {
             "ping" => {
