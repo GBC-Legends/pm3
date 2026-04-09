@@ -4,6 +4,7 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use mimalloc_sys;
 use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
@@ -28,6 +29,8 @@ const RESET_BUF_THRESHOLD: usize = 8 * MAX_BUF_PER_PROC; // 64MB
 const FLUSH_SECS: u64 = 15;
 const BASE_BUF_CAP: usize = 4096;
 const CHUNK_SIZE: usize = 8192;
+
+#[cfg(target_os = "linux")]
 const COLLECT_THRESHOLD_BYTES: u64 = 512 * 1024 * 1024;
 
 type FileCache = HashMap<u64, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
@@ -53,18 +56,14 @@ impl LoggingService {
         (rx, logs_tx, logs_rx)
     }
 
-    fn shrink_buf(buf: &mut Vec<u8>) {
-        if buf.capacity() > BASE_BUF_CAP {
-            buf.shrink_to(BASE_BUF_CAP);
-        }
-    }
-
     fn reset_or_shrink(buf: &mut Vec<u8>) {
         if buf.capacity() > RESET_BUF_THRESHOLD {
             *buf = Vec::with_capacity(BASE_BUF_CAP);
+        } else if buf.capacity() > MAX_BUF_PER_PROC {
+            buf.clear();
+            buf.shrink_to(BASE_BUF_CAP);
         } else {
             buf.clear();
-            Self::shrink_buf(buf);
         }
     }
 
@@ -201,7 +200,6 @@ impl LoggingService {
                 return;
             }
 
-            out_buf.clear();
             Self::reset_or_shrink(out_buf);
         }
 
@@ -212,7 +210,6 @@ impl LoggingService {
                 return;
             }
 
-            err_buf.clear();
             Self::reset_or_shrink(err_buf);
         }
     }
@@ -486,16 +483,14 @@ impl LoggingService {
                         let had_big_storm = bytes_last_15s >= COLLECT_THRESHOLD_BYTES;
 
                         let mut total_cap = 0usize;
-                        let mut total_len = 0usize;
 
-                        for (&idx, (out, err)) in buf_cache.iter() {
+                        for (_, (out, err)) in buf_cache.iter() {
                             let cap = out.capacity() + err.capacity();
-                            let len = out.len() + err.len();
                             total_cap += cap;
-                            total_len += len;
                         }
 
-                        if had_big_storm && total_len == 0 && total_cap <= 16 * 1024 {
+                        if had_big_storm && total_cap <= 16 * 1024 {
+                            println!("Forced memory collection after big storm: total_cap = {} bytes", total_cap);
                             Self::mi_collect_force();
                         }
                     }
