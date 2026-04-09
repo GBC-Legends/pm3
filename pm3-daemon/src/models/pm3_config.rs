@@ -10,6 +10,8 @@ pub(crate) struct PmProcessConfig {
     pub exec_args: Vec<String>,
     pub active: bool,
 
+    pub max_log_size: Option<u64>,
+
     pub _extra: HashMap<String, String>,
 }
 
@@ -39,6 +41,14 @@ impl FromStr for PmProcessConfig {
 
         let exec_name = map.remove("exec_name").ok_or("missing exec_name")?;
 
+        let max_log_size = match map
+            .remove("max_size")
+            .map(|v| v.parse::<u64>().unwrap_or(0))
+        {
+            Some(size) => Some(size),
+            None => None,
+        };
+
         let exec_args_string = map.remove("exec_args").unwrap_or_default();
         let exec_args: Vec<String> = exec_args_string
             .split_whitespace()
@@ -56,6 +66,7 @@ impl FromStr for PmProcessConfig {
             exec_name: PathBuf::from(exec_name),
             exec_args,
             active,
+            max_log_size,
             _extra: map,
         })
     }
@@ -86,6 +97,12 @@ impl PmProcessConfig {
         out.push_str("active=");
         out.push_str(if self.active { "1" } else { "0" });
         out.push('\n');
+
+        if let Some(size) = self.max_log_size {
+            out.push_str("max_size=");
+            out.push_str(&size.to_string());
+            out.push('\n');
+        }
 
         out
     }

@@ -170,7 +170,8 @@ impl PmProcess {
             )));
         }
 
-        let (stdout, stderr) = LoggingService::get_logging_pair(self.idx, &cfg.proc_name);
+        let (stdout, stderr) =
+            LoggingService::get_logging_pair(self.idx, &cfg.proc_name, cfg.max_log_size);
 
         let child = Command::new(&filename_abs)
             .current_dir(&cfg.exec_dir)

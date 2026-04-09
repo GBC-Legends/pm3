@@ -11,6 +11,10 @@ pub fn verify_start_config(raw: &str) -> anyhow::Result<PmProcessConfig> {
 
     let exec_dir = PathBuf::from(get_required(&params, "exec_dir")?);
     let exec_name = PathBuf::from(get_required(&params, "exec_name")?);
+    let max_log_size = match get_required(&params, "max_size") {
+        Ok(s) => Some(s.parse::<u64>()?),
+        Err(_) => None,
+    };
 
     validate_absolute_path("exec_dir", &exec_dir)?;
     validate_absolute_path("exec_name", &exec_name)?;
@@ -28,6 +32,7 @@ pub fn verify_start_config(raw: &str) -> anyhow::Result<PmProcessConfig> {
         exec_name,
         exec_args,
         active,
+        max_log_size,
         _extra: HashMap::new(),
     })
 }

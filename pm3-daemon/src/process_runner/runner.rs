@@ -116,11 +116,6 @@ impl ProcessRunner {
 
                 let process = PmProcess::new(config.clone(), idx::alloc_id());
 
-                if let Err(e) = process.dump_config().await {
-                    let _ = reply.send(Err(e.into()));
-                    return Ok(());
-                }
-
                 if let Err(e) = process.awake().await {
                     let _ = reply.send(Err(e.into()));
                     return Ok(());
@@ -437,10 +432,16 @@ impl ProcessRunner {
             RunnerCommand::Revive { reply } => {
                 if !self.processes.is_empty() {
                     for proc in self.processes.iter() {
-                        proc.stop().await?;
+                        if proc.is_active().await {
+                            proc.stop().await?;
+                        }
                     }
 
                     self.processes.clear();
+                    // Reset the NEXT_ID counter to 1
+                    use crate::process_runner::idx::NEXT_ID;
+                    use std::sync::atomic::Ordering;
+                    NEXT_ID.store(1, Ordering::Relaxed);
                 }
 
                 let mut cnt = 0;
