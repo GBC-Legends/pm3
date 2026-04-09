@@ -21,6 +21,7 @@ export default function LogViewer({ initialProcessFilter }) {
   }, [logs, autoScroll]);
 
   const filtered = logs.filter(log => {
+    if (!log.message?.trim()) return false;
     if (processFilter !== 'all' && log.process !== processFilter) return false;
     if (levelFilter !== 'all' && log.level !== levelFilter) return false;
     if (search && !log.message.toLowerCase().includes(search.toLowerCase())) return false;
@@ -66,7 +67,7 @@ export default function LogViewer({ initialProcessFilter }) {
           ))}
         </div>
 
-        <div className="relative flex-1 min-w-[200px]">
+        <div className="relative flex-1 min-w-50">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-pm3-muted" />
           <input
             type="text"

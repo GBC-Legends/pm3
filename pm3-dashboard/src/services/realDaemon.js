@@ -106,6 +106,55 @@ function formatTimestamp(unixSec) {
   return new Date(unixSec * 1000).toLocaleTimeString('en-US', { hour12: false });
 }
 
+const LOG_STREAM_PREFIX = /^(\d+)\s+(stdout|stderr)(?:\s(.*))?$/;
+
+function buildLogEntry(processId, stream, message) {
+  const proc = processCache.find(p => p.id === processId);
+
+  return {
+    id: logId++,
+    timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+    process: proc ? proc.name : `process-${processId}`,
+    level: stream === 'stderr' ? 'ERROR' : 'INFO',
+    message,
+  };
+}
+
+function consumeLogStreamLine(rawLine, currentContext, callback) {
+  const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+
+  if (line === 'ping') {
+    return currentContext;
+  }
+
+  if (line === 'eof') {
+    return null;
+  }
+
+  const match = line.match(LOG_STREAM_PREFIX);
+  if (match) {
+    const processId = parseInt(match[1], 10);
+    const stream = match[2];
+    const message = match[3] ?? '';
+
+    if (message.trim().length > 0) {
+      callback(buildLogEntry(processId, stream, message));
+    }
+    return { processId, stream };
+  }
+
+  if (!currentContext) {
+    return currentContext;
+  }
+
+  if (line.trim().length === 0) {
+    return currentContext;
+  }
+
+  callback(buildLogEntry(currentContext.processId, currentContext.stream, line));
+  return currentContext;
+}
+
 export const realDaemon = {
   async healthCheck() {
     try {
@@ -234,6 +283,7 @@ export const realDaemon = {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let currentContext = null;
 
         while (active) {
           const { done, value } = await reader.read();
@@ -244,10 +294,13 @@ export const realDaemon = {
           buffer = lines.pop() || ''; // keep incomplete last line
 
           for (const line of lines) {
-            if (!line.trim()) continue;
-            const entry = parseLogLine(line);
-            if (entry) callback(entry);
+            currentContext = consumeLogStreamLine(line, currentContext, callback);
           }
+        }
+
+        buffer += decoder.decode();
+        if (buffer.length > 0) {
+          consumeLogStreamLine(buffer, currentContext, callback);
         }
       } catch (err) {
         if (err.name !== 'AbortError') {
@@ -259,27 +312,6 @@ export const realDaemon = {
         }
       }
     };
-
-    function parseLogLine(line) {
-      // Format: "{processId} {stdout|stderr} {message}"
-      // TODO: daemon should add a timestamp field per line
-      const match = line.match(/^(\d+)\s+(stdout|stderr)\s+(.*)$/);
-      if (!match) return null;
-
-      const processId = parseInt(match[1], 10);
-      const stream = match[2];
-      const message = match[3];
-
-      const proc = processCache.find(p => p.id === processId);
-
-      return {
-        id: logId++,
-        timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
-        process: proc ? proc.name : `process-${processId}`,
-        level: stream === 'stderr' ? 'ERROR' : 'INFO',
-        message,
-      };
-    }
 
     startStream();
 
