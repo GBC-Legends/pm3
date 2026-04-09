@@ -4,8 +4,6 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
-use mimalloc_sys;
 use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -29,9 +27,6 @@ const RESET_BUF_THRESHOLD: usize = 8 * MAX_BUF_PER_PROC; // 64MB
 const FLUSH_SECS: u64 = 15;
 const BASE_BUF_CAP: usize = 4096;
 const CHUNK_SIZE: usize = 8192;
-
-#[cfg(target_os = "linux")]
-const COLLECT_THRESHOLD_BYTES: u64 = 512 * 1024 * 1024;
 
 type FileCache = HashMap<u64, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
 type BufCache = HashMap<u64, (Vec<u8>, Vec<u8>)>;
@@ -478,33 +473,9 @@ impl LoggingService {
                     Self::close_idle_fds(&mut file_cache, &mut activity_15s);
 
 
-                    #[cfg(target_os = "linux")]
-                    {
-                        let had_big_storm = bytes_last_15s >= COLLECT_THRESHOLD_BYTES;
-
-                        let mut total_cap = 0usize;
-
-                        for (_, (out, err)) in buf_cache.iter() {
-                            let cap = out.capacity() + err.capacity();
-                            total_cap += cap;
-                        }
-
-                        if had_big_storm && total_cap <= 16 * 1024 {
-                            println!("Forced memory collection after big storm: total_cap = {} bytes", total_cap);
-                            Self::mi_collect_force();
-                        }
-                    }
-
                     bytes_last_15s = 0;
                 }
             }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn mi_collect_force() {
-        unsafe {
-            mimalloc_sys::mi_collect(true);
         }
     }
 
