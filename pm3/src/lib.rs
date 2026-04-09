@@ -54,6 +54,8 @@ pub struct StartArgs {
     interpreter: Option<String>,
     #[arg(long)]
     name: Option<String>,
+    #[arg(long, short, value_name = "MB")]
+    max_size: Option<u16>,
 }
 
 #[derive(Args, Debug)]
@@ -90,7 +92,13 @@ pub fn process_commands(cmd: Commands) {
             Err(err) => println!("Error: {}", err),
         },
         Commands::Start(args) => {
-            match start_program(args.program, args.args, args.interpreter, args.name) {
+            match start_program(
+                args.program,
+                args.args,
+                args.interpreter,
+                args.name,
+                args.max_size,
+            ) {
                 Ok(response) => println!("{}", response),
                 Err(err) => println!("pm3: {}", err),
             }

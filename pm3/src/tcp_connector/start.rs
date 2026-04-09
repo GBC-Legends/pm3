@@ -9,6 +9,7 @@ pub(crate) struct NewProcessConfig {
     pub exec_name: String,
     pub exec_args: Vec<String>,
     pub active: bool,
+    pub max_size: Option<u16>,
 }
 
 impl NewProcessConfig {
@@ -17,6 +18,7 @@ impl NewProcessConfig {
         exec_dir: PathBuf,
         exec_name: String,
         exec_args: Vec<String>,
+        max_size: Option<u16>,
     ) -> Self {
         Self {
             proc_name: process_name,
@@ -24,6 +26,7 @@ impl NewProcessConfig {
             exec_name,
             exec_args,
             active: true,
+            max_size,
         }
     }
 
@@ -62,6 +65,9 @@ impl NewProcessConfig {
         push_kv(&mut q, "exec_dir", &self.exec_dir.to_string_lossy());
         push_kv(&mut q, "exec_name", &self.exec_name);
         push_kv(&mut q, "active", if self.active { "1" } else { "0" });
+        if let Some(max_size) = self.max_size {
+            push_kv(&mut q, "max_size", &max_size.to_string());
+        }
 
         if !self.exec_args.is_empty() {
             let joined = self.exec_args.join(" ");
@@ -77,6 +83,7 @@ pub fn start_program(
     args: Vec<String>,
     interpreter: Option<String>,
     name: Option<String>,
+    max_size: Option<u16>,
 ) -> Result<String> {
     let path = Path::new(&program);
 
@@ -100,7 +107,7 @@ pub fn start_program(
         }
     };
 
-    let new_process = NewProcessConfig::new(proc_name, exec_dir, exec_name, exec_args);
+    let new_process = NewProcessConfig::new(proc_name, exec_dir, exec_name, exec_args, max_size);
 
     let plaintext = format!("start {}", new_process.to_url_encoded());
     let reply = crate::tcp_connector::send_secure_command(&plaintext)?;
