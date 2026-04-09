@@ -449,13 +449,16 @@ impl ProcessRunner {
 
                 let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
+                let mut metrics_processes = Vec::with_capacity(configs_dir.len());
+
                 for cfg in configs_dir {
                     let process = PmProcess::new(cfg, idx::alloc_id());
-                    MetricsService::sync_new_process((process.idx, process.proc_name.to_string()))
-                        .await?;
+                    metrics_processes.push((process.idx, process.proc_name.to_string()));
                     self.processes.push(Arc::new(process));
                     cnt += 1;
                 }
+
+                MetricsService::sync_processes(metrics_processes).await?;
                 self.run().await?;
 
                 let msg = format!("PM3 has started {} processes from ~/.pm3/configs", cnt);

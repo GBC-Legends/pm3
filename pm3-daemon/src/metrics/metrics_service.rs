@@ -40,6 +40,7 @@ struct MetricsRow {
 enum DbMsg {
     Batch(Vec<MetricsRow>),
     SyncNewProcess((u64, String)),
+    SyncProcesses(Vec<ProcessSeed>),
     Shutdown,
     CleanDb,
 }
@@ -87,6 +88,22 @@ impl MetricsService {
 
         db_tx
             .send(DbMsg::SyncNewProcess(process))
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to send SyncProcesses to db worker: {}", e))
+    }
+
+    pub async fn sync_processes(processes: Vec<(u64, String)>) -> anyhow::Result<(), anyhow::Error> {
+        let db_tx = GLOBAL_DB_TX
+            .get()
+            .expect("MetricsService::init() not called");
+
+        let seeded = processes
+            .into_iter()
+            .map(ProcessSeed::from)
+            .collect::<Vec<_>>();
+
+        db_tx
+            .send(DbMsg::SyncProcesses(seeded))
             .await
             .map_err(|e| anyhow::anyhow!("failed to send SyncProcesses to db worker: {}", e))
     }
@@ -215,12 +232,20 @@ fn spawn_db_worker(db_path: &PathBuf, initial_processes: Vec<ProcessSeed>) -> mp
                 .map_err(|e| format!("metrics sqlite init error: {}", e))
             };
 
-            let sync_processes = |conn: &mut Connection, processes: &[ProcessSeed]| -> Result<(), String> {
+            let sync_processes = |conn: &mut Connection,
+                                  processes: &[ProcessSeed],
+                                  full_sync: bool|
+             -> Result<(), String> {
                 let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|e| format!("metrics sqlite begin sync tx error: {}", e))?;
 
                 (|| -> Result<(), String> {
+                    if full_sync {
+                        tx.execute("UPDATE processes SET external_id = -id", [])
+                            .map_err(|e| format!("metrics sqlite free external ids error: {}", e))?;
+                    }
+
                     let mut upsert_proc_stmt = tx
                         .prepare_cached(
                             r#"
@@ -377,7 +402,7 @@ fn spawn_db_worker(db_path: &PathBuf, initial_processes: Vec<ProcessSeed>) -> mp
                 return;
             }
 
-            if let Err(e) = sync_processes(&mut conn, &initial_processes) {
+            if let Err(e) = sync_processes(&mut conn, &initial_processes, true) {
                 eprintln!("{e}");
                 return;
             }
@@ -399,7 +424,22 @@ fn spawn_db_worker(db_path: &PathBuf, initial_processes: Vec<ProcessSeed>) -> mp
                     }
 
                     DbMsg::SyncNewProcess(process) => {
-                        if let Err(e) = sync_processes(&mut conn, &[process.into()]) {
+                        if let Err(e) = sync_processes(&mut conn, &[process.into()], false) {
+                            eprintln!("{e}");
+                            continue;
+                        }
+
+                        proc_cache = match warm_proc_cache(&conn) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("{e}");
+                                HashMap::new()
+                            }
+                        };
+                    }
+
+                    DbMsg::SyncProcesses(processes) => {
+                        if let Err(e) = sync_processes(&mut conn, &processes, true) {
                             eprintln!("{e}");
                             continue;
                         }
