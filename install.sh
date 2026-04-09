@@ -23,6 +23,7 @@ LATEST_URL=""
 EXTRACT_DIR=""
 ARCHIVE=""
 SCRIPT_URL=""
+ASSUME_YES=0
 
 info()    { printf '%s\n' "$*" >&2; }
 warn()    { printf 'WARN: %s\n' "$*" >&2; }
@@ -70,6 +71,33 @@ check_requirements() {
     require_cmd cat
 }
 
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -y|--yes)
+                ASSUME_YES=1
+                ;;
+            -h|--help)
+                cat >&2 <<EOF
+pm3 install script
+
+Usage:
+  sh install.sh [--yes]
+
+Options:
+  -y, --yes    run non-interactively and answer yes to prompts
+  -h, --help   show this help
+EOF
+                exit 0
+                ;;
+            *)
+                error "unknown argument: $1"
+                ;;
+        esac
+        shift
+    done
+}
+
 resolve_target_user() {
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
         TARGET_USER="$SUDO_USER"
@@ -81,14 +109,38 @@ resolve_target_user() {
     [ -n "$TARGET_HOME" ] || error "cannot resolve home directory for $TARGET_USER"
 }
 
+stdin_is_tty() {
+    [ -t 0 ]
+}
+
 prompt_yes_no() {
     question="$1"
 
+    if [ "$ASSUME_YES" -eq 1 ]; then
+        printf '%s [y/N]: y\n' "$question" >&2
+        return 0
+    fi
+
     printf '%s [y/N]: ' "$question" >&2
-    read ans || true
+
+    if stdin_is_tty; then
+        if read ans; then
+            :
+        else
+            ans=""
+        fi
+    elif [ -r /dev/tty ]; then
+        if read ans < /dev/tty; then
+            :
+        else
+            ans=""
+        fi
+    else
+        ans=""
+    fi
 
     case "${ans:-}" in
-        y|Y|yes|YES) return 0 ;;
+        y|Y|yes|YES|Yes) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -162,7 +214,6 @@ download_and_extract() {
     if [ ! -d "$EXTRACT_DIR/dashboard" ]; then
         warn "dashboard directory not found in release archive"
     fi
-
 }
 
 install_files() {
@@ -269,6 +320,7 @@ print_summary() {
 }
 
 main() {
+    parse_args "$@"
     check_requirements
     resolve_target_user
 
