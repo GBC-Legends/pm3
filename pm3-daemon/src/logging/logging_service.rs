@@ -4,9 +4,9 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use mimalloc_sys;
 use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
@@ -20,13 +20,15 @@ use crate::utils::pm3_safe_dir;
 pub struct LoggingService;
 
 static GLOBAL_TX: OnceLock<mpsc::UnboundedSender<LogMsg>> = OnceLock::new();
-static IDX_TO_META: OnceLock<Mutex<HashMap<u64, ProcLogMeta>>> = OnceLock::new();
+pub static IDX_TO_META: OnceLock<Mutex<HashMap<u64, ProcLogMeta>>> = OnceLock::new();
 static LOGS_SUBSCRIPTIONS: OnceLock<TokioMutex<Vec<LoggingSubscription>>> = OnceLock::new();
 
 const MAX_BUF_PER_PROC: usize = 8 * 1024 * 1024; // 8MB
+const RESET_BUF_THRESHOLD: usize = 8 * MAX_BUF_PER_PROC; // 64MB
 const FLUSH_SECS: u64 = 15;
 const BASE_BUF_CAP: usize = 4096;
 const CHUNK_SIZE: usize = 8192;
+const COLLECT_THRESHOLD_BYTES: u64 = 512 * 1024 * 1024;
 
 type FileCache = HashMap<u64, (Option<tokio::fs::File>, Option<tokio::fs::File>)>;
 type BufCache = HashMap<u64, (Vec<u8>, Vec<u8>)>;
@@ -57,7 +59,16 @@ impl LoggingService {
         }
     }
 
-    fn init_paths(idx: u64, proc_name: &str) -> (PathBuf, PathBuf) {
+    fn reset_or_shrink(buf: &mut Vec<u8>) {
+        if buf.capacity() > RESET_BUF_THRESHOLD {
+            *buf = Vec::with_capacity(BASE_BUF_CAP);
+        } else {
+            buf.clear();
+            Self::shrink_buf(buf);
+        }
+    }
+
+    fn init_paths(idx: u64, proc_name: &str, max_log_size: Option<u64>) -> (PathBuf, PathBuf) {
         let map = IDX_TO_META.get().expect("IDX_TO_META not initialized");
         let mut map = map.lock().expect("IDX_TO_META poisoned");
 
@@ -72,6 +83,7 @@ impl LoggingService {
                 proc_name: proc_name.to_string(),
                 stdout_path: stdout_path.clone(),
                 stderr_path: stderr_path.clone(),
+                max_log_size,
             },
         );
         (stdout_path, stderr_path)
@@ -183,31 +195,25 @@ impl LoggingService {
         };
 
         if !out_buf.is_empty() {
-            if let Some(out_f) = out_f_opt.as_mut() {
-                if let Err(e) = out_f.write_all(out_buf).await {
-                    eprintln!("stdout write error ({}): {} -> will reopen", idx, e);
-                    *out_f_opt = None;
-                    return;
-                }
-                out_buf.clear();
-                Self::shrink_buf(out_buf);
-            } else {
+            if let Err(e) = Self::write_with_rotation(idx, &stdout_path, out_f_opt, out_buf).await {
+                eprintln!("stdout write/rotate error ({}): {} -> will reopen", idx, e);
+                *out_f_opt = None;
                 return;
             }
+
+            out_buf.clear();
+            Self::reset_or_shrink(out_buf);
         }
 
         if !err_buf.is_empty() {
-            if let Some(err_f) = err_f_opt.as_mut() {
-                if let Err(e) = err_f.write_all(err_buf).await {
-                    eprintln!("stderr write error ({}): {} -> will reopen", idx, e);
-                    *err_f_opt = None;
-                    return;
-                }
-                err_buf.clear();
-                Self::shrink_buf(err_buf);
-            } else {
+            if let Err(e) = Self::write_with_rotation(idx, &stderr_path, err_f_opt, err_buf).await {
+                eprintln!("stderr write/rotate error ({}): {} -> will reopen", idx, e);
+                *err_f_opt = None;
                 return;
             }
+
+            err_buf.clear();
+            Self::reset_or_shrink(err_buf);
         }
     }
 
@@ -469,17 +475,49 @@ impl LoggingService {
                             bytes_last_15s / FLUSH_SECS
                         );
                     }
-                    bytes_last_15s = 0;
+
 
                     Self::flush_all(&mut buf_cache, &mut file_cache).await;
-
                     Self::close_idle_fds(&mut file_cache, &mut activity_15s);
+
+
+                    #[cfg(target_os = "linux")]
+                    {
+                        let had_big_storm = bytes_last_15s >= COLLECT_THRESHOLD_BYTES;
+
+                        let mut total_cap = 0usize;
+                        let mut total_len = 0usize;
+
+                        for (&idx, (out, err)) in buf_cache.iter() {
+                            let cap = out.capacity() + err.capacity();
+                            let len = out.len() + err.len();
+                            total_cap += cap;
+                            total_len += len;
+                        }
+
+                        if had_big_storm && total_len == 0 && total_cap <= 16 * 1024 {
+                            Self::mi_collect_force();
+                        }
+                    }
+
+                    bytes_last_15s = 0;
                 }
             }
         }
     }
 
-    pub fn get_logging_pair(idx: u64, proc_name: &str) -> (Stdio, Stdio) {
+    #[cfg(target_os = "linux")]
+    fn mi_collect_force() {
+        unsafe {
+            mimalloc_sys::mi_collect(true);
+        }
+    }
+
+    pub fn get_logging_pair(
+        idx: u64,
+        proc_name: &str,
+        max_log_size: Option<u64>,
+    ) -> (Stdio, Stdio) {
         let handle = Handle::try_current()
             .expect("LoggingService::get_logging_pair requires a running tokio runtime");
 
@@ -488,7 +526,7 @@ impl LoggingService {
             .expect("LoggingService::init() must be called before get_logging_pair()")
             .clone();
 
-        let _ = Self::init_paths(idx, proc_name);
+        let _ = Self::init_paths(idx, proc_name, max_log_size);
 
         let out = LoggingInstance::new(idx, StreamKind::Stdout, tx.clone(), handle.clone());
 

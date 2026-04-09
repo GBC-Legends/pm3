@@ -20,6 +20,8 @@ zstd = { version = "0.13", default-features = false }
 bytes = "1.0"
 tokio-stream = { version = "0.1" }
 dotenvy = "0.15"
+mimalloc = "0.1"
+mimalloc-sys = "0.1"
 
 [profile.release]
 lto = "fat"

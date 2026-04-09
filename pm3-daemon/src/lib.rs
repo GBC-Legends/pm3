@@ -16,6 +16,9 @@ use command_handler::tcp_listener::TcpCommandHandler;
 use process_runner::runner;
 use tokio::sync::mpsc;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub async fn start_application() -> anyhow::Result<()> {
     let pm3_cfg = daemon_config::DaemonConfig::new()?;
 

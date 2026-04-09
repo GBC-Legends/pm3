@@ -1,4 +1,5 @@
 pub mod logging_instance;
+mod logging_rotator;
 pub mod logging_service;
 pub mod logging_subscription;
 
@@ -10,6 +11,7 @@ pub struct ProcLogMeta {
     pub proc_name: String,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    pub max_log_size: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
