@@ -57,8 +57,8 @@ function parseCompressedMetrics(buffer) {
   const view = new DataView(decompressed.buffer, decompressed.byteOffset + lastOffset, recordSize);
 
   const timestamp = view.getUint32(0, true);
-  const cpuPermille = view.getUint16(8, true);
-  const ramKB = view.getUint16(10, true);
+  const cpuPermille = view.getUint16(8, true);   // u16 LE at offset 8
+  const ramKB = view.getUint32(10, true);         // u32 LE at offset 10
 
   return {
     timestamp,
