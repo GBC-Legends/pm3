@@ -121,6 +121,17 @@ stopped. A service stop/restart terminates that user's managed process group.
 Manual daemon launches retain explicit `pm3 revive` behavior unless
 `PM3_RESTORE=1` is set.
 
+On Linux, SIGTERM/SIGINT and `systemctl stop`/`restart` stop the daemon's command
+loop, send SIGTERM to each application's process group, and allow up to 10 seconds
+for application shutdown before killing remaining group members. PM3 then drains
+stdout/stderr to EOF, writes queued log buffers, and waits for file writes before
+exiting. The system unit uses `KillMode=mixed` so systemd lets the daemon perform
+this sequence first; its 30-second timeout remains the final cleanup bound.
+Applications should finish their own buffered output in their SIGTERM handlers.
+SIGKILL, power loss, failed storage, or applications that outlive the grace period
+cannot provide the same guarantee. Shutdown/drain/write failures are reported as
+a nonzero daemon exit instead of a successful shutdown.
+
 #### Updates, migration and removal
 
 ```sh

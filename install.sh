@@ -252,7 +252,7 @@ WorkingDirectory=$PREFIX/current
 ExecStart=$PREFIX/current/pm3-daemon
 Restart=on-failure
 RestartSec=3
-KillMode=control-group
+KillMode=mixed
 TimeoutStopSec=30
 UMask=0077
 

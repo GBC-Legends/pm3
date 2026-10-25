@@ -75,6 +75,7 @@ chmod +x "$ROOT/bin/systemctl" "$ROOT/bin/runuser" "$ROOT/bundle/pm3" "$ROOT/bun
 run() { chroot "$ROOT" /bin/env -u SUDO_USER PATH=/bin /bin/sh /install.sh --yes --from-dir /bundle "$@"; }
 run
 grep -q '^User=root$' "$ROOT/etc/systemd/system/pm3-root.service"
+grep -q '^KillMode=mixed$' "$ROOT/etc/systemd/system/pm3-root.service"
 grep -q 'HOME=/root' "$ROOT/etc/systemd/system/pm3-root.service"
 test -L "$ROOT/usr/local/bin/pm3"
 test -d "$ROOT/root/.pm3"

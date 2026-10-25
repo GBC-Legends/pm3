@@ -48,4 +48,5 @@ jobs:
         run: |
           cargo build --manifest-path pm3/Cargo.toml
           cargo build --manifest-path pm3-daemon/Cargo.toml
+          python3 tests/graceful-shutdown.py --cli "$PWD/pm3/target/debug/pm3" --daemon "$PWD/pm3-daemon/target/debug/pm3-daemon"
           sudo env PM3_TEST_CLI="$PWD/pm3/target/debug/pm3" PM3_TEST_DAEMON="$PWD/pm3-daemon/target/debug/pm3-daemon" sh tests/linux-users.sh

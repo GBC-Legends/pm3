@@ -21,9 +21,9 @@ chmod 0700 "$WORK/root/.pm3" "$WORK/app/.pm3"
 printf 'APP_SETTING=per-user-test\n' > "$WORK/app/.pm3/pm3.env"
 chown -R "nobody:$(id -gn nobody)" "$WORK/app"
 echo '<html>per-user dashboard</html>' > "$WORK/dashboard/index.html"
-systemd-run --unit="$ROOT_UNIT" --property=User=root --property=KillMode=control-group \
+systemd-run --unit="$ROOT_UNIT" --property=User=root --property=KillMode=mixed \
     --property="WorkingDirectory=$WORK" --setenv="HOME=$WORK/root" --setenv=PM3_RESTORE=1 "$DAEMON"
-systemd-run --unit="$USER_UNIT" --property=User=nobody --property=KillMode=control-group \
+systemd-run --unit="$USER_UNIT" --property=User=nobody --property=KillMode=mixed \
     --property="WorkingDirectory=$WORK" --setenv="HOME=$WORK/app" --setenv=PM3_RESTORE=1 "$DAEMON"
 root_cli() { env HOME="$WORK/root" "$CLI" "$@"; }
 app_cli() { runuser -u nobody -- env HOME="$WORK/app" "$CLI" "$@"; }

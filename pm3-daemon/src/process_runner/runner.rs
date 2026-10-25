@@ -72,7 +72,11 @@ impl ProcessRunner {
         self.run().await
     }
 
-    pub async fn dispatch(&mut self, rx: &mut mpsc::Receiver<RunnerCommand>) {
+    pub async fn dispatch(
+        &mut self,
+        rx: &mut mpsc::Receiver<RunnerCommand>,
+        mut shutdown: oneshot::Receiver<()>,
+    ) {
         println!("Dispatching processes...");
         let mut sys = System::new();
         let mut tick = interval(Duration::from_secs(1));
@@ -80,6 +84,10 @@ impl ProcessRunner {
         loop {
             tokio::select! {
                 biased;
+                _ = &mut shutdown => {
+                    rx.close();
+                    break;
+                }
                 _ = tick.tick() => {
                     for p in &self.processes {
                         if p.is_active().await {
@@ -99,6 +107,25 @@ impl ProcessRunner {
                     }
                 }
             }
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        let mut tasks = JoinSet::new();
+        for process in &self.processes {
+            let process = Arc::clone(process);
+            tasks.spawn(async move { process.shutdown().await });
+        }
+        let mut failure = None;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result.map_err(anyhow::Error::from).and_then(|r| r) {
+                eprintln!("[pm3] process shutdown failed: {error:#}");
+                failure = Some(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
