@@ -1,5 +1,5 @@
+use std::env;
 use std::path::PathBuf;
-use std::{env, fs};
 
 fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -35,8 +35,5 @@ pub(crate) fn pm3_home_dir_safe() -> PathBuf {
         .or_else(home_dir)
         .unwrap_or_else(|| env::current_dir().expect("cannot determine any usable directory"));
 
-    let dir = base.join(".pm3");
-    fs::create_dir_all(&dir).expect("PM3-daemon couldn't create its .pm3 directory");
-
-    dir
+    base.join(".pm3")
 }

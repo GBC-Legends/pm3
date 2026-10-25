@@ -698,9 +698,13 @@ fn fetch_status_snapshot() -> Result<Vec<ProcessInfo>> {
 }
 
 fn fetch_metrics(process_id: u64, since: u64) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(_) => return (Vec::new(), Vec::new()),
+    };
     let url = format!(
-        "http://localhost:8096/api/v1/get_metrics/{}?since={}",
-        process_id, since
+        "http://{}/api/v1/get_metrics/{}?since={}",
+        config.api_address, process_id, since
     );
 
     let response = match reqwest::blocking::get(&url) {
@@ -747,7 +751,13 @@ fn spawn_logs_stream(selected_id: Option<u64>, tx: Sender<String>) -> LogStreamH
     let stop_for_thread = Arc::clone(&stop);
 
     thread::spawn(move || {
-        let config = Config::load();
+        let config = match Config::load() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                let _ = tx.send(format!("monitor: {e}"));
+                return;
+            }
+        };
         let key = config.key();
 
         let mut stream = match init_stream() {

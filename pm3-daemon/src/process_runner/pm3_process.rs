@@ -174,6 +174,7 @@ impl PmProcess {
             LoggingService::get_logging_pair(self.idx, &cfg.proc_name, cfg.max_log_size);
 
         let child = Command::new(&filename_abs)
+            .envs(crate::daemon_config::process_environment())
             .current_dir(&cfg.exec_dir)
             .args(&cfg.exec_args)
             .env("PYTHONUNBUFFERED", "1")
@@ -363,7 +364,10 @@ impl PmProcess {
             .join("configs")
             .join(format!("{}.proc", self.proc_name));
 
-        pm3_safe_cfg_handler::save_config(&self.inner.lock().await.config, &config_file_path)?;
+        let inner = self.inner.lock().await;
+        let mut config = inner.config.clone();
+        config.active = inner.process_status.is_active();
+        pm3_safe_cfg_handler::save_config(&config, &config_file_path)?;
 
         Ok(config_file_path)
     }

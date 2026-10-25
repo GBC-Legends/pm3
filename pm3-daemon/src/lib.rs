@@ -20,7 +20,24 @@ use tokio::sync::mpsc;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub async fn start_application() -> anyhow::Result<()> {
-    let pm3_cfg = daemon_config::DaemonConfig::new()?;
+    let home = utils::pm3_safe_dir::pm3_home_dir_safe();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join("daemon.lock"))?;
+    lock.try_lock().map_err(|e| {
+        anyhow::anyhow!(
+            "a daemon already owns {} or it cannot be locked: {e}",
+            home.display()
+        )
+    })?;
+    let (pm3_cfg, cli_listener, api_listener) = daemon_config::DaemonConfig::new()?;
 
     let (logging_rx, logging_subs_tx, logging_subs_rx) = LoggingService::init();
 
@@ -40,23 +57,25 @@ pub async fn start_application() -> anyhow::Result<()> {
     tokio::spawn(async move {
         MetricsService::dispatch(metrics_rx).await;
     });
-    tokio::spawn(async move {
-        ExposingService::dispatch(&exposing_service).await;
-    });
 
     let (tx, mut rx) = mpsc::channel::<RunnerCommand>(5);
 
-    match pm3_runner.run().await {
-        Ok(()) => println!("PM3 daemon initialized successfully"),
-        Err(e) => eprintln!("PM3 daemon failed to initialize: {e}"),
+    if std::env::var("PM3_RESTORE").as_deref() == Ok("1") {
+        pm3_runner.restore().await?;
     }
 
     tokio::spawn(async move {
         pm3_runner.dispatch(&mut rx).await;
     });
 
-    let tcp = TcpCommandHandler::new(&pm3_cfg, tx).await?;
-    tcp.run().await?;
+    let tcp = TcpCommandHandler::new(&pm3_cfg, tx, cli_listener).await?;
+    let api_listener = tokio::net::TcpListener::from_std(api_listener)?;
+    pm3_cfg.publish()?;
+    println!("PM3 daemon ready; user state: {}", home.display());
+    tokio::select! {
+        result = tcp.run() => result?,
+        result = exposing_service.dispatch(api_listener) => result?,
+    }
 
     Ok(())
 }
