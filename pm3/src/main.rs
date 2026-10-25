@@ -11,13 +11,5 @@ fn main() {
 
     let cli = Cli::parse();
 
-    if let Some(instance) = &cli.instance {
-        pm3_runtime::select_instance(instance).expect("instance selection failed");
-    }
-    if let Err(e) = pm3_runtime::state_dir() {
-        eprintln!("pm3: {e}");
-        std::process::exit(2);
-    }
-
     process_commands(cli.command)
 }

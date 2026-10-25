@@ -7,7 +7,7 @@ use crossterm::style::{Color, Stylize};
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result, Write};
 
 pub fn request_logs(lines: Option<u64>, mut programs: Vec<String>) -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::load();
     let key = config.key();
     let process_names = get_process_names()?;
 

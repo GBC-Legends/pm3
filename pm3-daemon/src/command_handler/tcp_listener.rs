@@ -21,10 +21,9 @@ impl TcpCommandHandler {
     pub(crate) async fn new(
         config: &DaemonConfig,
         tx: mpsc::Sender<RunnerCommand>,
-        listener: std::net::TcpListener,
     ) -> anyhow::Result<Self> {
         let addr = format!("127.0.0.1:{}", config.port);
-        let listener = TcpListener::from_std(listener)?;
+        let listener = TcpListener::bind(&addr).await?;
         println!("TcpCommandHandler is listening on {}", &addr);
 
         CFG.set(config.clone())
