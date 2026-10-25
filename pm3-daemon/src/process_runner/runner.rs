@@ -60,6 +60,18 @@ impl ProcessRunner {
         Ok(())
     }
 
+    pub async fn restore(&mut self) -> Result<()> {
+        let configs = crate::utils::pm3_safe_cfg_handler::parse_configs()?;
+        let mut metrics = Vec::with_capacity(configs.len());
+        for cfg in configs {
+            let process = PmProcess::new(cfg, idx::alloc_id());
+            metrics.push((process.idx, process.proc_name.to_string()));
+            self.processes.push(Arc::new(process));
+        }
+        MetricsService::sync_processes(metrics).await?;
+        self.run().await
+    }
+
     pub async fn dispatch(&mut self, rx: &mut mpsc::Receiver<RunnerCommand>) {
         println!("Dispatching processes...");
         let mut sys = System::new();
@@ -420,8 +432,10 @@ impl ProcessRunner {
                     }
 
                     Ok(format!(
-                        "{} configs saved to ~/.pm3/configs (backup created in ~/.pm3/configs.old)",
-                        cnt
+                        "{} configs saved to {} (backup created in {})",
+                        cnt,
+                        configs_dir.display(),
+                        configs_old_dir.display()
                     ))
                 }
                 .await;
@@ -430,6 +444,13 @@ impl ProcessRunner {
                 Ok(())
             }
             RunnerCommand::Revive { reply } => {
+                let configs_dir = match crate::utils::pm3_safe_cfg_handler::parse_configs() {
+                    Ok(configs) => configs,
+                    Err(e) => {
+                        let _ = reply.send(Err(e.into()));
+                        return Ok(());
+                    }
+                };
                 if !self.processes.is_empty() {
                     for proc in self.processes.iter() {
                         if proc.is_active().await {
@@ -445,9 +466,6 @@ impl ProcessRunner {
                 }
 
                 let mut cnt = 0;
-                use crate::utils::pm3_safe_cfg_handler;
-
-                let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
                 let mut metrics_processes = Vec::with_capacity(configs_dir.len());
 
@@ -461,7 +479,11 @@ impl ProcessRunner {
                 MetricsService::sync_processes(metrics_processes).await?;
                 self.run().await?;
 
-                let msg = format!("PM3 has started {} processes from ~/.pm3/configs", cnt);
+                let msg = format!(
+                    "PM3 has started {} processes from {}",
+                    cnt,
+                    pm3_safe_dir::pm3_home_dir_safe().join("configs").display()
+                );
                 let _ = reply.send(Ok(msg));
                 Ok(())
             }

@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  pull_request:
   push:
     branches:
       - master
@@ -27,6 +28,17 @@ jobs:
         working-directory: ./pm3
         run: cargo check
 
+      - name: Shared instance resolution tests
+        run: cargo test --manifest-path pm3-runtime/Cargo.toml
+
+      - name: CLI tests
+        run: cargo test --manifest-path pm3/Cargo.toml
+
+      - name: Installer syntax and lifecycle tests
+        run: |
+          sh -n install.sh
+          sudo sh tests/install-system.sh
+
       - name: pm3-daemon cargo check
         working-directory: ./pm3-daemon
         run: cargo check
@@ -34,3 +46,10 @@ jobs:
       - name: pm3-daemon cargo test
         working-directory: ./pm3-daemon
         run: cargo test
+
+      - name: Linux daemon lifecycle
+        run: |
+          cargo build --manifest-path pm3/Cargo.toml
+          cargo build --manifest-path pm3-daemon/Cargo.toml
+          sh tests/linux-instances.sh
+          sudo env PM3_TEST_CLI="$PWD/pm3/target/debug/pm3" PM3_TEST_DAEMON="$PWD/pm3-daemon/target/debug/pm3-daemon" sh tests/systemd-lifecycle.sh

@@ -363,7 +363,10 @@ impl PmProcess {
             .join("configs")
             .join(format!("{}.proc", self.proc_name));
 
-        pm3_safe_cfg_handler::save_config(&self.inner.lock().await.config, &config_file_path)?;
+        let inner = self.inner.lock().await;
+        let mut config = inner.config.clone();
+        config.active = inner.process_status.is_active();
+        pm3_safe_cfg_handler::save_config(&config, &config_file_path)?;
 
         Ok(config_file_path)
     }

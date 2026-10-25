@@ -10,7 +10,8 @@ pub(crate) fn safely_retreive_configs() -> PathBuf {
     use crate::utils::pm3_safe_dir::pm3_home_dir_safe;
     let configs_path = pm3_home_dir_safe().join("configs");
 
-    create_dir_all(&configs_path).expect("PM3-daemon couldn't create its .pm3/configs/ directory");
+    create_dir_all(&configs_path)
+        .expect("PM3 daemon couldn't create its instance configs directory");
 
     configs_path
 }
@@ -18,27 +19,24 @@ pub(crate) fn safely_retreive_configs() -> PathBuf {
 pub(crate) fn parse_configs() -> io::Result<Vec<PmProcessConfig>> {
     let mut res = Vec::new();
 
-    for entry in fs::read_dir(safely_retreive_configs())? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let path = entry.path();
-
+    let mut paths = fs::read_dir(safely_retreive_configs())?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    paths.sort();
+    for path in paths {
         if path.extension() != Some(OsStr::new("proc")) {
             continue;
         }
 
-        let text = match fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        let cfg: PmProcessConfig = match text.parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let text = fs::read_to_string(&path).map_err(|e| {
+            io::Error::new(e.kind(), format!("cannot read {}: {e}", path.display()))
+        })?;
+        let cfg: PmProcessConfig = text.parse().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid process config {}: {e}", path.display()),
+            )
+        })?;
 
         res.push(cfg);
     }
