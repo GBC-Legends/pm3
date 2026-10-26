@@ -89,7 +89,7 @@ pub fn process_commands(cmd: Commands) {
     match cmd {
         Commands::Ping => match ping_server() {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("Error: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Start(args) => {
             match start_program(
@@ -100,46 +100,51 @@ pub fn process_commands(cmd: Commands) {
                 args.max_size,
             ) {
                 Ok(response) => println!("{}", response),
-                Err(err) => println!("pm3: {}", err),
+                Err(err) => command_failed(err),
             }
         }
         Commands::Stop(args) => match stop_program(args.programs) {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Restart(args) | Commands::Reload(args) => match restart_program(args.programs) {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Delete(args) | Commands::Remove(args) | Commands::Rm(args) => {
             match delete_program(args.programs) {
                 Ok(response) => println!("{}", response),
-                Err(err) => println!("pm3: {}", err),
+                Err(err) => command_failed(err),
             }
         }
         Commands::Revive | Commands::Resurrect => match revive_program() {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Dump | Commands::Save => match dump_program() {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Flush(args) | Commands::Clear(args) => match flush_program(args.programs) {
             Ok(response) => println!("{}", response),
-            Err(err) => println!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Status | Commands::List | Commands::Ls => match request_status() {
             Ok(_) => {}
-            Err(err) => eprintln!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Logs(args) => match request_logs(args.lines, args.programs) {
             Ok(_) => {}
-            Err(err) => eprintln!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
         Commands::Monit | Commands::Monitor => match open_monitor() {
             Ok(_) => {}
-            Err(err) => eprintln!("pm3: {}", err),
+            Err(err) => command_failed(err),
         },
     };
+}
+
+fn command_failed(error: impl std::fmt::Display) -> ! {
+    eprintln!("pm3: {error}");
+    std::process::exit(1);
 }

@@ -19,10 +19,7 @@ pub(crate) fn parse_configs() -> io::Result<Vec<PmProcessConfig>> {
     let mut res = Vec::new();
 
     for entry in fs::read_dir(safely_retreive_configs())? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let entry = entry?;
 
         let path = entry.path();
 
@@ -30,15 +27,13 @@ pub(crate) fn parse_configs() -> io::Result<Vec<PmProcessConfig>> {
             continue;
         }
 
-        let text = match fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        let cfg: PmProcessConfig = match text.parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let text = fs::read_to_string(&path)?;
+        let cfg: PmProcessConfig = text.parse().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid process config {}: {e}", path.display()),
+            )
+        })?;
 
         res.push(cfg);
     }

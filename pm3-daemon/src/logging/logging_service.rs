@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::runtime::Handle;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::logging::logging_instance::{LogMsg, LoggingInstance};
 use crate::logging::logging_subscription::{LoggingSubscription, LoggingSubscriptionAction};
@@ -18,7 +18,8 @@ use crate::utils::pm3_safe_dir;
 
 pub struct LoggingService;
 
-static GLOBAL_TX: OnceLock<mpsc::UnboundedSender<LogMsg>> = OnceLock::new();
+static GLOBAL_TX: OnceLock<Mutex<Option<mpsc::UnboundedSender<LogMsg>>>> = OnceLock::new();
+static READERS: OnceLock<Mutex<JoinSet<std::io::Result<()>>>> = OnceLock::new();
 pub static IDX_TO_META: OnceLock<Mutex<HashMap<u64, ProcLogMeta>>> = OnceLock::new();
 static LOGS_SUBSCRIPTIONS: OnceLock<TokioMutex<Vec<LoggingSubscription>>> = OnceLock::new();
 
@@ -44,7 +45,8 @@ impl LoggingService {
 
         let (tx, rx) = mpsc::unbounded_channel::<LogMsg>();
         let (logs_tx, logs_rx) = mpsc::channel::<LoggingSubscriptionAction>(2);
-        let _ = GLOBAL_TX.set(tx);
+        let _ = GLOBAL_TX.set(Mutex::new(Some(tx)));
+        let _ = READERS.set(Mutex::new(JoinSet::new()));
         let _ = IDX_TO_META.set(Mutex::new(HashMap::new()));
         let _ = LOGS_SUBSCRIPTIONS.set(TokioMutex::new(Vec::new()));
 
@@ -166,13 +168,17 @@ impl LoggingService {
         true
     }
 
-    async fn flush_proc(idx: u64, buf_cache: &mut BufCache, file_cache: &mut FileCache) {
+    async fn flush_proc(
+        idx: u64,
+        buf_cache: &mut BufCache,
+        file_cache: &mut FileCache,
+    ) -> anyhow::Result<()> {
         let Some((out_buf, err_buf)) = buf_cache.get_mut(&idx) else {
-            return;
+            return Ok(());
         };
 
         if out_buf.is_empty() && err_buf.is_empty() {
-            return;
+            return Ok(());
         }
 
         let (stdout_path, stderr_path) =
@@ -181,18 +187,18 @@ impl LoggingService {
         Self::ensure_exists_or_reopen(idx, &stdout_path, &stderr_path, file_cache).await;
 
         if !Self::ensure_file_handles(idx, &stdout_path, &stderr_path, file_cache).await {
-            return;
+            anyhow::bail!("cannot open log files for process {idx}");
         }
 
         let Some((out_f_opt, err_f_opt)) = file_cache.get_mut(&idx) else {
-            return;
+            anyhow::bail!("missing log handles for process {idx}");
         };
 
         if !out_buf.is_empty() {
             if let Err(e) = Self::write_with_rotation(idx, &stdout_path, out_f_opt, out_buf).await {
                 eprintln!("stdout write/rotate error ({}): {} -> will reopen", idx, e);
                 *out_f_opt = None;
-                return;
+                return Err(e);
             }
 
             Self::reset_or_shrink(out_buf);
@@ -202,17 +208,26 @@ impl LoggingService {
             if let Err(e) = Self::write_with_rotation(idx, &stderr_path, err_f_opt, err_buf).await {
                 eprintln!("stderr write/rotate error ({}): {} -> will reopen", idx, e);
                 *err_f_opt = None;
-                return;
+                return Err(e);
             }
 
             Self::reset_or_shrink(err_buf);
         }
+        Ok(())
     }
 
-    async fn flush_all(buf_cache: &mut BufCache, file_cache: &mut FileCache) {
+    async fn flush_all(buf_cache: &mut BufCache, file_cache: &mut FileCache) -> anyhow::Result<()> {
         let procs: Vec<u64> = buf_cache.keys().cloned().collect();
+        let mut failure = None;
         for proc_idx in procs {
-            Self::flush_proc(proc_idx, buf_cache, file_cache).await;
+            if let Err(error) = Self::flush_proc(proc_idx, buf_cache, file_cache).await {
+                eprintln!("[pm3] log flush failed for {proc_idx}: {error:#}");
+                failure = Some(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -307,11 +322,14 @@ impl LoggingService {
     pub async fn dispatch(
         mut rx: mpsc::UnboundedReceiver<LogMsg>,
         logs_rx: mpsc::Receiver<LoggingSubscriptionAction>,
-    ) {
+        mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(FLUSH_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut subs_channel_listener = logs_rx;
+        let mut subscriptions_open = true;
+        let mut closing = false;
 
         let mut bytes_last_15s: u64 = 0;
 
@@ -321,6 +339,11 @@ impl LoggingService {
 
         loop {
             tokio::select! {
+                _ = &mut shutdown, if !closing => {
+                    // Reject new messages, but drain everything already accepted.
+                    rx.close();
+                    closing = true;
+                }
                 msg = rx.recv() => {
                     match msg {
                         Some(msg) => {
@@ -344,7 +367,9 @@ impl LoggingService {
 
                             let total = entry.0.len() + entry.1.len();
                             if total >= MAX_BUF_PER_PROC {
-                                Self::flush_proc(msg.idx, &mut buf_cache, &mut file_cache).await;
+                                if let Err(error) = Self::flush_proc(msg.idx, &mut buf_cache, &mut file_cache).await {
+                                    eprintln!("[pm3] log flush failed: {error:#}");
+                                }
                             }
 
                             let chunk = match msg.stream {
@@ -367,13 +392,20 @@ impl LoggingService {
                             }
                         }
                         None => {
-                            Self::flush_all(&mut buf_cache, &mut file_cache).await;
+                            Self::flush_all(&mut buf_cache, &mut file_cache).await?;
+                            for (out, err) in file_cache.values_mut() {
+                                for file in [out, err].into_iter().flatten() {
+                                    file.flush().await?;
+                                    file.sync_all().await?;
+                                }
+                            }
                             break;
                         }
                     }
                 }
-                sub = subs_channel_listener.recv() => {
+                sub = subs_channel_listener.recv(), if subscriptions_open => {
                     let Some(sub) = sub else {
+                        subscriptions_open = false;
                         continue;
                     };
 
@@ -469,7 +501,7 @@ impl LoggingService {
                     }
 
 
-                    Self::flush_all(&mut buf_cache, &mut file_cache).await;
+                    let _ = Self::flush_all(&mut buf_cache, &mut file_cache).await;
                     Self::close_idle_fds(&mut file_cache, &mut activity_15s);
 
 
@@ -477,6 +509,29 @@ impl LoggingService {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Called only after the runner has stopped creating processes and closed their pipes.
+    pub async fn drain_readers() -> anyhow::Result<()> {
+        let mut readers = std::mem::take(&mut *READERS.get().unwrap().lock().unwrap());
+        let mut failure = None;
+        while let Some(result) = readers.join_next().await {
+            if let Err(error) = result
+                .map_err(anyhow::Error::from)
+                .and_then(|r| r.map_err(anyhow::Error::from))
+            {
+                failure = Some(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    pub fn close_input() {
+        GLOBAL_TX.get().unwrap().lock().unwrap().take();
     }
 
     pub fn get_logging_pair(
@@ -484,19 +539,25 @@ impl LoggingService {
         proc_name: &str,
         max_log_size: Option<u64>,
     ) -> (Stdio, Stdio) {
-        let handle = Handle::try_current()
-            .expect("LoggingService::get_logging_pair requires a running tokio runtime");
-
         let tx = GLOBAL_TX
             .get()
             .expect("LoggingService::init() must be called before get_logging_pair()")
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("log service is shutting down")
             .clone();
 
         let _ = Self::init_paths(idx, proc_name, max_log_size);
 
-        let out = LoggingInstance::new(idx, StreamKind::Stdout, tx.clone(), handle.clone());
-
-        let err = LoggingInstance::new(idx, StreamKind::Stderr, tx, handle);
+        let mut readers = READERS.get().unwrap().lock().unwrap();
+        while let Some(result) = readers.try_join_next() {
+            if !matches!(result, Ok(Ok(()))) {
+                eprintln!("[pm3] log pipe reader failed: {result:?}");
+            }
+        }
+        let out = LoggingInstance::new(idx, StreamKind::Stdout, tx.clone(), &mut readers);
+        let err = LoggingInstance::new(idx, StreamKind::Stderr, tx, &mut readers);
 
         (out.into(), err.into())
     }

@@ -20,7 +20,7 @@ use std::time::Duration;
 pub const AAD: &[u8] = b"pm3:tcp:v1";
 
 pub fn send_secure_command(cmd: &str) -> Result<String> {
-    let config = Config::load();
+    let config = Config::load()?;
     let key = config.key();
 
     let mut stream = init_stream()?;
@@ -79,7 +79,11 @@ pub fn send_secure_command(cmd: &str) -> Result<String> {
                 }
             };
 
-            Ok(String::from_utf8_lossy(&decrypted).trim().to_string())
+            let response = String::from_utf8_lossy(&decrypted).trim().to_string();
+            if let Some(error) = response.strip_prefix("ERR ") {
+                return Err(Error::other(error.to_owned()));
+            }
+            Ok(response)
         }
         Err(e) => {
             match e.kind() {
@@ -99,7 +103,7 @@ pub fn send_secure_command(cmd: &str) -> Result<String> {
 }
 
 pub fn init_stream() -> Result<TcpStream> {
-    let config = Config::load();
+    let config = Config::load()?;
     let address = format!("127.0.0.1:{}", config.port);
 
     let stream = match TcpStream::connect(&address) {

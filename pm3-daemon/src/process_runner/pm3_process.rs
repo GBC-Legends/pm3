@@ -24,6 +24,8 @@ struct PmProcessInner {
     config: PmProcessConfig,
     handle: Option<Child>,
     process_status: PmProcessStatus,
+    #[cfg(unix)]
+    process_group: Option<u32>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -152,6 +154,8 @@ impl PmProcess {
                 config: cfg,
                 handle: None,
                 process_status: starting_status,
+                #[cfg(unix)]
+                process_group: None,
             }),
         }
     }
@@ -173,16 +177,27 @@ impl PmProcess {
         let (stdout, stderr) =
             LoggingService::get_logging_pair(self.idx, &cfg.proc_name, cfg.max_log_size);
 
-        let child = Command::new(&filename_abs)
+        let mut command = Command::new(&filename_abs);
+        command
+            .envs(crate::daemon_config::process_environment())
             .current_dir(&cfg.exec_dir)
             .args(&cfg.exec_args)
             .env("PYTHONUNBUFFERED", "1")
             .stdout(stdout)
-            .stderr(stderr)
-            .spawn()?;
+            .stderr(stderr);
+        #[cfg(unix)]
+        command.process_group(0);
+        let child = command.spawn()?;
+        // Command owns its configured pipe writers even after spawn. Drop them now
+        // so EOF depends only on the application and its descendants.
+        drop(command);
 
         {
             let mut guard = self.inner.lock().await;
+            #[cfg(unix)]
+            {
+                guard.process_group = child.id();
+            }
             guard.handle = Some(child);
         }
 
@@ -205,6 +220,15 @@ impl PmProcess {
             )));
         };
 
+        #[cfg(unix)]
+        let group = self.inner.lock().await.process_group;
+        #[cfg(unix)]
+        if let Some(group) = group {
+            if let Err(error) = signal_group(group, libc::SIGKILL) {
+                self.inner.lock().await.handle = child;
+                return Err(error.into());
+            }
+        }
         if let Err(e) = child_ref.kill().await {
             let mut guard = self.inner.lock().await;
             guard.handle = child;
@@ -212,6 +236,47 @@ impl PmProcess {
         }
 
         self.set_status(PmProcessStatus::Stopped).await;
+        #[cfg(unix)]
+        {
+            self.inner.lock().await.process_group = None;
+        }
+        Ok(())
+    }
+
+    /// Graceful daemon shutdown. All applications receive TERM concurrently;
+    /// remaining descendants are killed after the grace period expires.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        let mut guard = self.inner.lock().await;
+        #[cfg(unix)]
+        if let Some(group) = guard.process_group {
+            signal_group(group, libc::SIGTERM)?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            if let Some(child) = guard.handle.as_mut() {
+                if let Ok(result) = tokio::time::timeout_at(deadline, child.wait()).await {
+                    result?;
+                }
+            }
+            while group_exists(group)? && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            if group_exists(group)? {
+                eprintln!(
+                    "[pm3] {} did not stop in 10s; killing its process group",
+                    self.proc_name
+                );
+            }
+            signal_group(group, libc::SIGKILL)?;
+            if let Some(child) = guard.handle.as_mut() {
+                child.wait().await?;
+            }
+            guard.process_group = None;
+        }
+        #[cfg(not(unix))]
+        if let Some(child) = guard.handle.as_mut() {
+            child.kill().await?;
+        }
+        guard.handle = None;
+        guard.process_status = PmProcessStatus::Stopped;
         Ok(())
     }
 
@@ -308,6 +373,13 @@ impl PmProcess {
             Ok(Some(status)) => {
                 let code = status.code().unwrap_or(-1);
 
+                #[cfg(unix)]
+                if let Some(group) = guard.process_group.take() {
+                    if let Err(error) = signal_group(group, libc::SIGKILL) {
+                        eprintln!("[pm3] descendant cleanup failed: {error}");
+                    }
+                }
+
                 guard.handle = None;
 
                 if code == 0 {
@@ -363,7 +435,10 @@ impl PmProcess {
             .join("configs")
             .join(format!("{}.proc", self.proc_name));
 
-        pm3_safe_cfg_handler::save_config(&self.inner.lock().await.config, &config_file_path)?;
+        let inner = self.inner.lock().await;
+        let mut config = inner.config.clone();
+        config.active = inner.process_status.is_active();
+        pm3_safe_cfg_handler::save_config(&config, &config_file_path)?;
 
         Ok(config_file_path)
     }
@@ -378,5 +453,34 @@ impl PmProcess {
 
     pub async fn not_initialized(&self) {
         self.set_status(PmProcessStatus::InitializingFailed).await;
+    }
+}
+
+#[cfg(unix)]
+fn signal_group(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
+    // Each managed child is spawned in its own process group, never the daemon's.
+    let result = unsafe { libc::kill(-(pid as libc::pid_t), signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+fn group_exists(pid: u32) -> std::io::Result<bool> {
+    let result = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
     }
 }

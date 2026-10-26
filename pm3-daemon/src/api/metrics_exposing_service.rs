@@ -1,6 +1,5 @@
 use std::convert::Infallible;
 use std::io::{self, Write};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::Router;
@@ -44,7 +43,7 @@ impl ExposingService {
         }
     }
 
-    pub async fn dispatch(&self) {
+    pub async fn dispatch(&self, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
         let cors = CorsLayer::new()
             .allow_origin(tower_http::cors::Any)
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -71,15 +70,12 @@ impl ExposingService {
             .layer(cors)
             .with_state(self.clone());
 
-        let addr: SocketAddr = format!("{}:{}", self.address, self.port)
-            .parse()
-            .expect("invalid bind address");
-
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-
-        println!("ExposingService is listening on {}", addr);
-
-        let _ = axum::serve(listener, app).await;
+        println!(
+            "ExposingService is listening on {}:{}",
+            self.address, self.port
+        );
+        axum::serve(listener, app).await?;
+        Ok(())
     }
 
     async fn healthz() -> &'static str {

@@ -49,8 +49,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             bundle_name: pm3-linux-x86_64
+            pm3_bin: pm3
+            daemon_bin: pm3-daemon
+            archive_ext: tar.gz
+
+          - os: ubuntu-24.04-arm
+            bundle_name: pm3-linux-aarch64
             pm3_bin: pm3
             daemon_bin: pm3-daemon
             archive_ext: tar.gz
@@ -113,8 +119,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             bundle_name: pm3-linux-x86_64
+            pm3_bin: pm3
+            daemon_bin: pm3-daemon
+            archive_ext: tar.gz
+
+          - os: ubuntu-24.04-arm
+            bundle_name: pm3-linux-aarch64
             pm3_bin: pm3
             daemon_bin: pm3-daemon
             archive_ext: tar.gz
@@ -132,6 +144,9 @@ jobs:
             archive_ext: tar.gz
 
     steps:
+      - name: Checkout installer
+        uses: actions/checkout@v4
+
       - name: Download dashboard
         uses: actions/download-artifact@v4
         with:
@@ -158,6 +173,7 @@ jobs:
           cp binaries/${{ matrix.pm3_bin }} bundle/
           cp binaries/${{ matrix.daemon_bin }} bundle/
           cp -r dashboard-dist/. bundle/dashboard/
+          cp install.sh bundle/
           cd bundle
           tar -czf ../${{ matrix.bundle_name }}.${{ matrix.archive_ext }} .
 

@@ -60,7 +60,23 @@ impl ProcessRunner {
         Ok(())
     }
 
-    pub async fn dispatch(&mut self, rx: &mut mpsc::Receiver<RunnerCommand>) {
+    pub async fn restore(&mut self) -> Result<()> {
+        let configs = crate::utils::pm3_safe_cfg_handler::parse_configs()?;
+        let mut metrics = Vec::with_capacity(configs.len());
+        for cfg in configs {
+            let process = PmProcess::new(cfg, idx::alloc_id());
+            metrics.push((process.idx, process.proc_name.to_string()));
+            self.processes.push(Arc::new(process));
+        }
+        MetricsService::sync_processes(metrics).await?;
+        self.run().await
+    }
+
+    pub async fn dispatch(
+        &mut self,
+        rx: &mut mpsc::Receiver<RunnerCommand>,
+        mut shutdown: oneshot::Receiver<()>,
+    ) {
         println!("Dispatching processes...");
         let mut sys = System::new();
         let mut tick = interval(Duration::from_secs(1));
@@ -68,6 +84,10 @@ impl ProcessRunner {
         loop {
             tokio::select! {
                 biased;
+                _ = &mut shutdown => {
+                    rx.close();
+                    break;
+                }
                 _ = tick.tick() => {
                     for p in &self.processes {
                         if p.is_active().await {
@@ -87,6 +107,25 @@ impl ProcessRunner {
                     }
                 }
             }
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        let mut tasks = JoinSet::new();
+        for process in &self.processes {
+            let process = Arc::clone(process);
+            tasks.spawn(async move { process.shutdown().await });
+        }
+        let mut failure = None;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result.map_err(anyhow::Error::from).and_then(|r| r) {
+                eprintln!("[pm3] process shutdown failed: {error:#}");
+                failure = Some(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -430,6 +469,13 @@ impl ProcessRunner {
                 Ok(())
             }
             RunnerCommand::Revive { reply } => {
+                let configs_dir = match crate::utils::pm3_safe_cfg_handler::parse_configs() {
+                    Ok(configs) => configs,
+                    Err(e) => {
+                        let _ = reply.send(Err(e.into()));
+                        return Ok(());
+                    }
+                };
                 if !self.processes.is_empty() {
                     for proc in self.processes.iter() {
                         if proc.is_active().await {
@@ -445,9 +491,6 @@ impl ProcessRunner {
                 }
 
                 let mut cnt = 0;
-                use crate::utils::pm3_safe_cfg_handler;
-
-                let configs_dir = pm3_safe_cfg_handler::parse_configs().unwrap();
 
                 let mut metrics_processes = Vec::with_capacity(configs_dir.len());
 

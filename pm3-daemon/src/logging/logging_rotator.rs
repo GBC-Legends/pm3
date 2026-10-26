@@ -79,6 +79,7 @@ impl LoggingService {
 
             if let Some(file) = file_slot.as_mut() {
                 file.write_all(data).await?;
+                file.flush().await?;
             }
 
             return Ok(());
@@ -118,6 +119,7 @@ impl LoggingService {
 
             if let Some(file) = file_slot.as_mut() {
                 file.write_all(&data[offset..offset + to_write]).await?;
+                file.flush().await?;
             }
 
             offset += to_write;

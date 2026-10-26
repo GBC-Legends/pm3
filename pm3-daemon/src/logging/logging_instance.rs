@@ -3,8 +3,8 @@ use std::io::Read;
 use crate::logging::StreamKind;
 
 use os_pipe::{PipeReader, PipeWriter, pipe};
-use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 #[derive(Debug)]
 pub struct LogMsg {
@@ -15,7 +15,6 @@ pub struct LogMsg {
 
 pub struct LoggingInstance {
     writer: Option<PipeWriter>,
-    _task: tokio::task::JoinHandle<()>,
 }
 
 impl LoggingInstance {
@@ -23,14 +22,13 @@ impl LoggingInstance {
         idx: u64,
         stream: StreamKind,
         tx: mpsc::UnboundedSender<LogMsg>,
-        handle: Handle,
+        readers: &mut JoinSet<std::io::Result<()>>,
     ) -> Self {
         let (reader, writer) = pipe().expect("pipe failed");
-        let task = Self::spawn_reader(reader, idx, stream, tx, handle);
+        Self::spawn_reader(reader, idx, stream, tx, readers);
 
         Self {
             writer: Some(writer),
-            _task: task,
         }
     }
 
@@ -39,15 +37,15 @@ impl LoggingInstance {
         idx: u64,
         stream: StreamKind,
         tx: mpsc::UnboundedSender<LogMsg>,
-        handle: Handle,
-    ) -> tokio::task::JoinHandle<()> {
-        handle.spawn_blocking(move || {
+        readers: &mut JoinSet<std::io::Result<()>>,
+    ) {
+        readers.spawn_blocking(move || {
             let mut reader = reader;
             let mut buf = [0u8; 8192];
 
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break,
+                    Ok(0) => return Ok(()),
                     Ok(n) => {
                         if tx
                             .send(LogMsg {
@@ -57,13 +55,17 @@ impl LoggingInstance {
                             })
                             .is_err()
                         {
-                            break;
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                "log receiver closed before pipe was drained",
+                            ));
                         }
                     }
-                    Err(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
                 }
             }
-        })
+        });
     }
 }
 
