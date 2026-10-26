@@ -16,6 +16,15 @@ cleanup() {
 }
 trap cleanup EXIT
 chmod 0755 "$WORK"
+# CI checkouts may live below a private runner HOME. Stage executable copies so
+# nobody can run them without changing permissions on the checkout or its parents.
+install -m 0755 "$CLI" "$WORK/pm3"
+install -m 0755 "$DAEMON" "$WORK/pm3-daemon"
+CLI="$WORK/pm3"
+DAEMON="$WORK/pm3-daemon"
+# Application starts inherit the CLI's working directory, which must also be
+# accessible to the account running them (the caller may be inside /root).
+cd "$WORK"
 mkdir -p "$WORK/root/.pm3" "$WORK/app/.pm3" "$WORK/dashboard"
 chmod 0700 "$WORK/root/.pm3" "$WORK/app/.pm3"
 printf 'APP_SETTING=per-user-test\n' > "$WORK/app/.pm3/pm3.env"
